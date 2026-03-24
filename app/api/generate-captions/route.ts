@@ -27,7 +27,7 @@ import { hasAdminAccess } from "@/lib/supabase/auth";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
-export const maxDuration = 420;
+export const maxDuration = 300;
 
 type StageNumber = 1 | 2 | 3 | 4;
 
