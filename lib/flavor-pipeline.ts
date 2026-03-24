@@ -287,9 +287,6 @@ type StepInputSemanticKind = "image_and_text" | "text" | "unknown";
 export type StepCompatibilityIssueCode =
   | "first_step_must_accept_image_and_text"
   | "json_output_downgraded_to_text"
-  | "json_output_prompt_not_strict"
-  | "json_output_prompt_missing_schema_shape"
-  | "json_output_prompt_requests_prose"
   | "json_input_depends_on_non_json_output"
   | "text_input_depends_on_json_output_without_json_instruction";
 
@@ -321,7 +318,6 @@ export type StepCompatibilitySnapshot = {
   jsonIsRequired: boolean;
   isJsonOutputStep: boolean;
   downgradedFromJsonToText: boolean;
-  promptRequiresStrictJson: boolean;
   passesCompatibilityValidation: boolean;
   severity: ValidationSeverity | null;
   summaryReason: string | null;
@@ -340,13 +336,6 @@ export type FlavorStepCompatibilityResult = {
   warnings: StepCompatibilityIssue[];
   infoIssues: StepCompatibilityIssue[];
 };
-
-export const STRICT_JSON_REQUIREMENTS = [
-  "return only valid json",
-  "no markdown",
-  "no explanation",
-  "no prose before or after json",
-] as const;
 
 export const CAPTION_JSON_SHAPE_REQUIREMENT =
   'Return this shape exactly: ["caption 1","caption 2","caption 3","caption 4","caption 5"]';
@@ -370,29 +359,6 @@ function getHighestSeverity(issues: StepCompatibilityIssue[]): ValidationSeverit
 
 function normalizePromptText(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
-}
-
-function includesAllJsonRequirements(promptText: string): boolean {
-  const normalized = normalizePromptText(promptText);
-  return STRICT_JSON_REQUIREMENTS.every((token) => normalized.includes(token));
-}
-
-function containsJsonShapeRequirement(promptText: string): boolean {
-  const normalized = normalizePromptText(promptText);
-  return (
-    normalized.includes("json array") &&
-    (normalized.includes('["caption 1"') || normalized.includes("[\"caption 1\""))
-  );
-}
-
-function promptRequestsProse(promptText: string): boolean {
-  const normalized = normalizePromptText(promptText);
-  return (
-    normalized.includes("plain text") ||
-    normalized.includes("paragraph") ||
-    normalized.includes("natural language") ||
-    normalized.includes("write a sentence")
-  );
 }
 
 function promptExpectsJsonInput(promptText: string): boolean {
@@ -499,7 +465,6 @@ export function validateFlavorStepCompatibility(
     const combinedPrompt = `${systemPrompt}\n${userPrompt}`;
     const outputKind = toOutputSemanticKind(step.llmOutputTypeId, outputSlug);
     const isJsonOutputStep = outputKind === "json";
-    const promptRequiresStrictJson = includesAllJsonRequirements(combinedPrompt);
     const expectsJsonInput = promptExpectsJsonInput(combinedPrompt);
 
     const snapshot: StepCompatibilitySnapshot = {
@@ -520,7 +485,6 @@ export function validateFlavorStepCompatibility(
       jsonIsRequired: false,
       isJsonOutputStep,
       downgradedFromJsonToText: false,
-      promptRequiresStrictJson,
       passesCompatibilityValidation: true,
       severity: null,
       summaryReason: null,
@@ -559,59 +523,12 @@ export function validateFlavorStepCompatibility(
       Boolean(lastStep && step.id === lastStep.id && snapshot.configuredOutputKind === "json");
     snapshot.jsonIsRequired = snapshot.jsonRequiredDownstream || snapshot.jsonRequiredByBackend;
 
-    const combinedPrompt = `${step.llmSystemPrompt ?? ""}\n${step.llmUserPrompt ?? ""}`;
-    const asksForProse = promptRequestsProse(combinedPrompt);
-    const requiresCaptionShape = snapshot.jsonRequiredByBackend;
-
     if (snapshot.configuredOutputKind === "json" && !snapshot.jsonIsRequired) {
       snapshot.effectiveOutputKind = "text";
       snapshot.outputKind = "text";
       snapshot.downgradedFromJsonToText = true;
-      pushIssue({
-        severity: "warning",
-        code: "json_output_downgraded_to_text",
-        message:
-          `Step ${step.id} was configured as JSON but normalized to text because downstream parsing did not require JSON.`,
-        stepId: step.id,
-        orderBy: step.orderBy,
-      });
     } else if (snapshot.configuredOutputKind !== "json") {
       continue;
-    }
-
-    if (!snapshot.promptRequiresStrictJson) {
-      pushIssue({
-        severity: snapshot.jsonIsRequired ? "warning" : "info",
-        code: "json_output_prompt_not_strict",
-        message:
-          snapshot.jsonIsRequired
-            ? `Step ${step.id} is configured for JSON output. The prompt is not strict JSON, so results may be less reliable, but generation can still continue.`
-            : `Step ${step.id} prompt could be stricter for more consistent formatting, but generation can still continue.`,
-        stepId: step.id,
-        orderBy: step.orderBy,
-      });
-    }
-    if (requiresCaptionShape && !containsJsonShapeRequirement(combinedPrompt)) {
-      pushIssue({
-        severity: snapshot.jsonRequiredByBackend ? "warning" : "info",
-        code: "json_output_prompt_missing_schema_shape",
-        message: snapshot.jsonRequiredByBackend
-          ? `Step ${step.id} should define the expected caption JSON array shape for stronger backend reliability.`
-          : `Step ${step.id} could define a clearer JSON shape for more consistent formatting.`,
-        stepId: step.id,
-        orderBy: step.orderBy,
-      });
-    }
-    if (asksForProse) {
-      pushIssue({
-        severity: "warning",
-        code: "json_output_prompt_requests_prose",
-        message: snapshot.jsonIsRequired
-          ? `Step ${step.id} is configured for JSON output, but the prompt also asks for prose/plain text. Results may be less reliable, but generation can still continue.`
-          : `Step ${step.id} was configured for JSON output, but the prompt reads like prose. The request will continue using text output for this boundary.`,
-        stepId: step.id,
-        orderBy: step.orderBy,
-      });
     }
   }
 
