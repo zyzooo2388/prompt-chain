@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 import { LoginForm } from "@/components/auth/login-form";
 import { getAdminAccessResult, getUnauthorizedRedirectPath } from "@/lib/supabase/auth";
 
+export const dynamic = "force-dynamic";
+
 export default async function LoginPage() {
   const access = await getAdminAccessResult();
 

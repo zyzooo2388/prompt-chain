@@ -3,6 +3,8 @@ import { redirect } from "next/navigation";
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { getAdminAccessResult } from "@/lib/supabase/auth";
 
+export const dynamic = "force-dynamic";
+
 type UnauthorizedPageProps = {
   searchParams?: Promise<{ reason?: string }>;
 };

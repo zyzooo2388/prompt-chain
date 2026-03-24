@@ -4,6 +4,8 @@ import { redirect } from "next/navigation";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { getAdminAccessResult, getUnauthorizedRedirectPath } from "@/lib/supabase/auth";
 
+export const dynamic = "force-dynamic";
+
 type DashboardLayoutProps = {
   children: ReactNode;
 };

@@ -1,17 +1,17 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import localFont from "next/font/local";
 
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
-const geistSans = Geist({
+const geistSans = localFont({
   variable: "--font-geist-sans",
-  subsets: ["latin"],
+  src: "../node_modules/next/dist/next-devtools/server/font/geist-latin.woff2",
 });
 
-const geistMono = Geist_Mono({
+const geistMono = localFont({
   variable: "--font-geist-mono",
-  subsets: ["latin"],
+  src: "../node_modules/next/dist/next-devtools/server/font/geist-mono-latin.woff2",
 });
 
 export const metadata: Metadata = {
