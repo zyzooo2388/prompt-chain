@@ -2,6 +2,15 @@ This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-
 
 ## Getting Started
 
+Create a local env file before starting the app:
+
+```bash
+cp .env.local.example .env.local
+```
+
+The caption-generation flow uses `ASSIGNMENT5_API_BASE_URL` (defaults to `https://api.almostcrackd.ai`).
+If `ASSIGNMENT5_API_TOKEN` is provided, server-side caption requests use that token; otherwise they fall back to the logged-in user's Supabase JWT access token.
+
 First, run the development server:
 
 ```bash
