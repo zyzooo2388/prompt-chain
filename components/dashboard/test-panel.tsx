@@ -57,6 +57,8 @@ type LocalDebugState = {
   validationSummary: unknown;
   stepDetails: unknown;
   stepCompatibilityValidation: unknown;
+  errorDiagnostics: unknown;
+  timingMs: unknown;
   finalCanonicalRequestBody: unknown;
   canonicalPayloadValidation: unknown;
   resolvedStepModels: unknown;
@@ -155,8 +157,13 @@ function chooseDefaultAvailableFlavorId(
   return flavors.find((flavor) => isFlavorAvailable(flavor.id))?.id ?? "";
 }
 
-function toUserGenerationErrorMessage(rawMessage: string, debug?: CaptionGenerationDebug): string {
+function toUserGenerationErrorMessage(
+  rawMessage: string,
+  debug?: CaptionGenerationDebug,
+  flavorLabel?: string | null,
+): string {
   const errorPayload = isRecord(debug?.errorPayload) ? debug.errorPayload : null;
+  const errorDiagnostics = isRecord(debug?.errorDiagnostics) ? debug.errorDiagnostics : null;
   const canonicalValidation =
     debug && typeof debug.canonicalPayloadValidation === "object" && debug.canonicalPayloadValidation !== null
       ? (debug.canonicalPayloadValidation as Record<string, unknown>)
@@ -164,6 +171,28 @@ function toUserGenerationErrorMessage(rawMessage: string, debug?: CaptionGenerat
   const modelValidationIssues = Array.isArray(errorPayload?.modelValidationIssues)
     ? (errorPayload.modelValidationIssues as Array<Record<string, unknown>>)
     : [];
+  const errorCode = typeof errorPayload?.errorCode === "string" ? errorPayload.errorCode : null;
+  const upstreamStatus =
+    typeof debug?.upstreamStatus === "number"
+      ? debug.upstreamStatus
+      : typeof errorPayload?.upstreamStatus === "number"
+        ? (errorPayload.upstreamStatus as number)
+        : typeof errorPayload?.status === "number"
+          ? (errorPayload.status as number)
+          : null;
+  const upstreamBodyKind =
+    typeof debug?.upstreamBodyKind === "string"
+      ? debug.upstreamBodyKind
+      : typeof errorPayload?.upstreamBodyKind === "string"
+        ? (errorPayload.upstreamBodyKind as string)
+        : null;
+  const flavorNameFromDebug =
+    isRecord(debug?.selectedFlavor) && typeof debug.selectedFlavor.name === "string"
+      ? (debug.selectedFlavor.name as string)
+      : errorDiagnostics && isRecord(errorDiagnostics.selectedFlavor) && typeof errorDiagnostics.selectedFlavor.name === "string"
+        ? (errorDiagnostics.selectedFlavor.name as string)
+        : null;
+  const resolvedFlavorLabel = flavorLabel ?? flavorNameFromDebug ?? "this flavor";
   const firstModelIssue = modelValidationIssues[0] ?? null;
   const firstModelIssueMessage =
     firstModelIssue && typeof firstModelIssue.message === "string" ? firstModelIssue.message : null;
@@ -199,6 +228,12 @@ function toUserGenerationErrorMessage(rawMessage: string, debug?: CaptionGenerat
   if (firstModelIssueMessage) {
     return `Model validation failed: ${firstModelIssueMessage}`;
   }
+  if (errorCode === "upstream_timeout" || upstreamStatus === 504) {
+    return `The caption API timed out while generating captions for ${resolvedFlavorLabel}. This flavor may be too slow or the upstream service is temporarily unavailable.`;
+  }
+  if (upstreamBodyKind === "html") {
+    return `The caption API returned an upstream error page while generating captions for ${resolvedFlavorLabel}. Raw HTML was omitted from the UI.`;
+  }
 
   const normalized = rawMessage.toLowerCase();
   if (
@@ -233,6 +268,9 @@ function toUserGenerationErrorMessage(rawMessage: string, debug?: CaptionGenerat
   }
   if (normalized.includes("forbidden")) {
     return "You do not have admin access to run caption generation.";
+  }
+  if (normalized.includes("timed out after")) {
+    return `The caption API timed out while generating captions for ${resolvedFlavorLabel}. This flavor may be too slow or the upstream service is temporarily unavailable.`;
   }
   return rawMessage;
 }
@@ -278,6 +316,43 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
     () => validateAndNormalizeFlavorPipelineSteps(selectedFlavor?.steps ?? []),
     [selectedFlavor],
   );
+  const selectedFlavorComplexity = useMemo(() => {
+    let totalPromptChars = 0;
+    let maxStepPromptChars = 0;
+    let maxPromptStepOrder: number | null = null;
+
+    for (const step of selectedFlavorPipeline.normalizedSteps) {
+      const promptChars = step.llmSystemPrompt.length + step.llmUserPrompt.length;
+      totalPromptChars += promptChars;
+      if (promptChars > maxStepPromptChars) {
+        maxStepPromptChars = promptChars;
+        maxPromptStepOrder = step.orderBy;
+      }
+    }
+
+    return {
+      stepCount: selectedFlavorPipeline.normalizedSteps.length,
+      totalPromptChars,
+      maxStepPromptChars,
+      maxPromptStepOrder,
+    };
+  }, [selectedFlavorPipeline.normalizedSteps]);
+  const heavyFlavorWarning = useMemo(() => {
+    if (
+      selectedFlavorComplexity.stepCount < 4 &&
+      selectedFlavorComplexity.totalPromptChars < 30000 &&
+      selectedFlavorComplexity.maxStepPromptChars < 12000
+    ) {
+      return null;
+    }
+
+    const largestStepLabel =
+      selectedFlavorComplexity.maxPromptStepOrder !== null
+        ? `largest prompt is step ${selectedFlavorComplexity.maxPromptStepOrder} at ${selectedFlavorComplexity.maxStepPromptChars.toLocaleString()} chars`
+        : `largest prompt is ${selectedFlavorComplexity.maxStepPromptChars.toLocaleString()} chars`;
+
+    return `Heavy chain warning: ${selectedFlavorComplexity.stepCount} steps, ${selectedFlavorComplexity.totalPromptChars.toLocaleString()} prompt chars total, ${largestStepLabel}. Upstream timeouts are more likely for this flavor.`;
+  }, [selectedFlavorComplexity]);
   const selectedStepCompatibilityValidation = useMemo(
     () => validateFlavorStepCompatibility(selectedFlavorPipeline.normalizedSteps, referenceCatalog),
     [referenceCatalog, selectedFlavorPipeline.normalizedSteps],
@@ -454,6 +529,7 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const submitStartedAt = Date.now();
 
     if (!selectedFlavor || validationSummary.issues.some((issue) => isMainPanelBlockingIssue(issue))) {
       setError(fatalValidationMessage ?? "Caption generation is blocked by a fatal validation issue.");
@@ -463,7 +539,9 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
         validationSummary,
         stepDetails: selectedStepCompatibilityValidation.steps,
         stepCompatibilityValidation: selectedStepCompatibilityValidation,
+        errorDiagnostics: null,
         finalCanonicalRequestBody: null,
+        timingMs: null,
         canonicalPayloadValidation: null,
         resolvedStepModels: selectedResolvedStepModels,
         externalPromptConfig: selectedExternalPromptConfigPreview,
@@ -513,7 +591,24 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
       });
 
       setProgressPhase("generating_captions");
+      const displayStartedAt = Date.now();
       setCaptions(result.captions);
+      const displayDurationMs = Date.now() - displayStartedAt;
+      console.info("[test-panel][timing] caption generation completed", {
+        flavorId: normalizedHumorFlavorId,
+        flavorName: selectedFlavor.name,
+        captionCount: result.captions.length,
+        totalSubmitMs: Date.now() - submitStartedAt,
+        displayDurationMs,
+        apiTimingMs:
+          result.debug && typeof result.debug.timingMs === "object" && result.debug.timingMs !== null
+            ? result.debug.timingMs
+            : null,
+        payloadSizeBytes:
+          typeof result.debug.payloadSizeBytes === "number" ? result.debug.payloadSizeBytes : null,
+        flavorComplexity:
+          result.debug && typeof result.debug.flavorComplexity === "object" ? result.debug.flavorComplexity : null,
+      });
 
       const localSnapshot = buildFlavorPipelineDebugSnapshot(selectedFlavor);
       const localCompatibilityValidation = validateFlavorStepCompatibility(
@@ -529,7 +624,9 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
             : localCompatibilityValidation.steps,
         stepCompatibilityValidation:
           result.debug.stepCompatibilityValidation ?? localCompatibilityValidation,
+        errorDiagnostics: null,
         finalCanonicalRequestBody: result.debug.finalCaptionRequestBody ?? null,
+        timingMs: result.debug.timingMs ?? null,
         canonicalPayloadValidation: result.debug.canonicalPayloadValidation ?? null,
         resolvedStepModels:
           result.debug.resolvedStepModels ??
@@ -546,9 +643,29 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
         caughtError instanceof CaptionGenerationApiError
           ? caughtError.debug
           : ({ errorPayload: errorMessage } satisfies CaptionGenerationDebug);
-      const userMessage = toUserGenerationErrorMessage(errorMessage, errorDebug);
+      const userMessage = toUserGenerationErrorMessage(
+        errorMessage,
+        errorDebug,
+        selectedFlavor?.displayLabel ?? null,
+      );
       setError(userMessage);
       setCaptions([]);
+      console.warn("[test-panel][timing] caption generation failed", {
+        flavorId: selectedFlavor?.id ?? null,
+        flavorName: selectedFlavor?.name ?? null,
+        totalSubmitMs: Date.now() - submitStartedAt,
+        phase: errorDebug.phase ?? null,
+        stageName: errorDebug.stageName ?? null,
+        upstreamStatus: errorDebug.upstreamStatus ?? null,
+        upstreamBodyKind: errorDebug.upstreamBodyKind ?? null,
+        timingMs: errorDebug.timingMs ?? null,
+        payloadSizeBytes:
+          typeof errorDebug.payloadSizeBytes === "number" ? errorDebug.payloadSizeBytes : null,
+        flavorComplexity:
+          errorDebug && typeof errorDebug.flavorComplexity === "object"
+            ? errorDebug.flavorComplexity
+            : null,
+      });
       const localSnapshot = selectedFlavor ? buildFlavorPipelineDebugSnapshot(selectedFlavor) : null;
       const localResolvedStepModels = localSnapshot
         ? resolveStepModels(localSnapshot.normalizedSteps, referenceCatalog)
@@ -566,7 +683,9 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
             : localCompatibilityValidation?.steps ?? null,
         stepCompatibilityValidation:
           errorDebug.stepCompatibilityValidation ?? localCompatibilityValidation ?? null,
+        errorDiagnostics: errorDebug.errorDiagnostics ?? null,
         finalCanonicalRequestBody: errorDebug.finalCaptionRequestBody ?? null,
+        timingMs: errorDebug.timingMs ?? null,
         canonicalPayloadValidation: errorDebug.canonicalPayloadValidation ?? null,
         resolvedStepModels: errorDebug.resolvedStepModels ?? localResolvedStepModels,
         externalPromptConfig:
@@ -587,6 +706,7 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
   }
 
   const canGenerate = !isLoading && !validationSummary.issues.some((issue) => isMainPanelBlockingIssue(issue));
+  const errorDiagnostics = isRecord(debugState?.errorDiagnostics) ? debugState.errorDiagnostics : null;
 
   return (
     <div className="space-y-4">
@@ -633,9 +753,12 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
               );
             })}
           </select>
-      {fatalValidationMessage ? (
-        <p className="mt-2 text-xs text-red-700 dark:text-red-300">{fatalValidationMessage}</p>
-      ) : null}
+          {fatalValidationMessage ? (
+            <p className="mt-2 text-xs text-red-700 dark:text-red-300">{fatalValidationMessage}</p>
+          ) : null}
+          {heavyFlavorWarning ? (
+            <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">{heavyFlavorWarning}</p>
+          ) : null}
         </label>
 
         <div className="flex items-center gap-3">
@@ -644,7 +767,7 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
             disabled={!canGenerate}
             className="rounded-lg bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-50 transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
           >
-            {isLoading ? "Generating Captions..." : "Generate Captions"}
+            {isLoading ? `Generating ${selectedFlavor?.displayLabel ?? "Captions"}...` : "Generate Captions"}
           </button>
           {!isLoading && error ? (
             <button
@@ -664,13 +787,53 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
 
       {isLoading ? (
         <div className="rounded-lg border border-zinc-200 bg-white p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
-          {PHASE_LABEL[progressPhase] || "Generating captions"} for {imageFile?.name ?? "your image"}...
+          {PHASE_LABEL[progressPhase] || "Generating captions"} for{" "}
+          <span className="font-medium">{selectedFlavor?.displayLabel ?? "selected flavor"}</span> on{" "}
+          {imageFile?.name ?? "your image"}...
         </div>
       ) : null}
 
       {error ? (
         <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700 dark:border-red-900 dark:bg-red-950/60 dark:text-red-200">
-          {error}
+          <p>{error}</p>
+          {errorDiagnostics ? (
+            <details className="mt-3 text-xs text-red-800 dark:text-red-200">
+              <summary className="cursor-pointer font-medium">Debug details</summary>
+              <div className="mt-2 space-y-1 rounded border border-red-200/70 bg-red-100/70 p-3 dark:border-red-900 dark:bg-red-950/40">
+                <p>
+                  Status:{" "}
+                  {typeof errorDiagnostics.upstreamStatus === "number"
+                    ? errorDiagnostics.upstreamStatus
+                    : "unknown"}
+                </p>
+                <p>
+                  Phase:{" "}
+                  {typeof errorDiagnostics.phase === "string"
+                    ? errorDiagnostics.phase
+                    : "unknown"}
+                </p>
+                <p>
+                  Response format:{" "}
+                  {typeof errorDiagnostics.upstreamBodyKind === "string"
+                    ? errorDiagnostics.upstreamBodyKind
+                    : "unknown"}
+                </p>
+                <p>
+                  Duration:{" "}
+                  {typeof errorDiagnostics.totalDurationMs === "number"
+                    ? `${errorDiagnostics.totalDurationMs}ms`
+                    : "unknown"}
+                </p>
+                <p>
+                  Ordered steps:{" "}
+                  {Array.isArray(errorDiagnostics.orderedStepIds) &&
+                  errorDiagnostics.orderedStepIds.length > 0
+                    ? errorDiagnostics.orderedStepIds.join(", ")
+                    : "unavailable"}
+                </p>
+              </div>
+            </details>
+          ) : null}
         </div>
       ) : null}
 
@@ -722,6 +885,18 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
             <p className="mb-1 font-medium">Step Compatibility Validation</p>
             <pre className="max-h-64 overflow-auto rounded border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-700 dark:bg-zinc-950">
               {JSON.stringify(debugState?.stepCompatibilityValidation ?? selectedStepCompatibilityValidation, null, 2)}
+            </pre>
+          </div>
+          <div>
+            <p className="mb-1 font-medium">Error Diagnostics</p>
+            <pre className="max-h-64 overflow-auto rounded border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-700 dark:bg-zinc-950">
+              {JSON.stringify(debugState?.errorDiagnostics ?? null, null, 2)}
+            </pre>
+          </div>
+          <div>
+            <p className="mb-1 font-medium">Timing (ms)</p>
+            <pre className="max-h-64 overflow-auto rounded border border-zinc-200 bg-zinc-50 p-2 dark:border-zinc-700 dark:bg-zinc-950">
+              {JSON.stringify(debugState?.timingMs ?? null, null, 2)}
             </pre>
           </div>
           <div>

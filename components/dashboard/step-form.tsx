@@ -6,20 +6,80 @@ import {
 } from "@/lib/flavor-step-templates";
 import type { FlavorStepDraft, FlavorStepDraftErrors } from "@/lib/flavor-types";
 
+export type StepLookupOption = {
+  value: string;
+  label: string;
+  description?: string | null;
+};
+
 type StepFormProps = {
   initialValue: FlavorStepDraft;
   errors: FlavorStepDraftErrors;
   isSaving: boolean;
   submitLabel: string;
+  flavorId: number;
+  flavorSummary: string;
+  stepTypeOptions: StepLookupOption[];
+  llmModelOptions: StepLookupOption[];
+  llmInputTypeOptions: StepLookupOption[];
+  llmOutputTypeOptions: StepLookupOption[];
   onSubmit: (value: FlavorStepDraft) => void | Promise<void>;
   onCancel: () => void;
 };
+
+function RequiredLabel({ children }: { children: string }) {
+  return (
+    <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+      {children} <span className="text-red-700 dark:text-red-300">*</span>
+    </span>
+  );
+}
+
+function LookupField({
+  label,
+  value,
+  options,
+  error,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: StepLookupOption[];
+  error?: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block">
+      <RequiredLabel>{label}</RequiredLabel>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        aria-invalid={Boolean(error)}
+        className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 aria-[invalid=true]:border-red-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:aria-[invalid=true]:border-red-400"
+      >
+        <option value="">Select {label.toLowerCase()}</option>
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      {error ? <p className="mt-1 text-xs text-red-700 dark:text-red-300">{error}</p> : null}
+    </label>
+  );
+}
 
 export function StepForm({
   initialValue,
   errors,
   isSaving,
   submitLabel,
+  flavorId,
+  flavorSummary,
+  stepTypeOptions,
+  llmModelOptions,
+  llmInputTypeOptions,
+  llmOutputTypeOptions,
   onSubmit,
   onCancel,
 }: StepFormProps) {
@@ -47,15 +107,28 @@ export function StepForm({
   return (
     <form
       className="space-y-4 rounded-xl border border-dashed border-zinc-300 bg-zinc-50 p-4 dark:border-zinc-700 dark:bg-zinc-950"
+      noValidate
       onSubmit={(event) => {
         event.preventDefault();
         void onSubmit(draft);
       }}
     >
+      <div className="rounded-lg border border-zinc-200 bg-white/60 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
+        <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+          Bound Flavor
+        </p>
+        <p className="mt-1 text-sm font-medium text-zinc-900 dark:text-zinc-100">{flavorSummary}</p>
+        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">humor_flavor_id: {flavorId}</p>
+        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+          This step is assigned automatically to the selected humor flavor.
+        </p>
+      </div>
+
       <div className="space-y-3 rounded-lg border border-zinc-200 bg-white/60 p-3 dark:border-zinc-800 dark:bg-zinc-900/40">
         <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
           Basic
         </p>
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">Fields marked with * are required.</p>
         <label className="block">
           <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
             Reusable Step Pattern
@@ -92,15 +165,15 @@ export function StepForm({
           )}
         </label>
         <label className="block">
-          <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Description</span>
+          <RequiredLabel>Description</RequiredLabel>
           <textarea
-            required
             rows={2}
             value={draft.description}
             onChange={(event) =>
               setDraft((current) => ({ ...current, description: event.target.value }))
             }
-            className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            aria-invalid={Boolean(errors.description)}
+            className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 aria-[invalid=true]:border-red-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:aria-[invalid=true]:border-red-400"
           />
           {errors.description ? (
             <p className="mt-1 text-xs text-red-700 dark:text-red-300">{errors.description}</p>
@@ -108,44 +181,36 @@ export function StepForm({
         </label>
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Order</span>
+            <RequiredLabel>Order</RequiredLabel>
             <input
-              required
               type="number"
               min={1}
               value={draft.orderBy}
               onChange={(event) =>
                 setDraft((current) => ({ ...current, orderBy: event.target.value }))
               }
-              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+              aria-invalid={Boolean(errors.orderBy)}
+              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 aria-[invalid=true]:border-red-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:aria-[invalid=true]:border-red-400"
             />
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              Prefilled to the next available sequence number for this flavor.
+            </p>
             {errors.orderBy ? (
               <p className="mt-1 text-xs text-red-700 dark:text-red-300">{errors.orderBy}</p>
             ) : null}
           </label>
-          <label className="block">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              Step Type ID
-            </span>
-            <input
-              required
-              type="number"
-              min={1}
-              value={draft.humorFlavorStepTypeId}
-              onChange={(event) =>
-                setDraft((current) => ({
-                  ...current,
-                  humorFlavorStepTypeId: event.target.value,
-                }))
-              }
-              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-            />
-            {errors.humorFlavorStepTypeId ? (
-              <p className="mt-1 text-xs text-red-700 dark:text-red-300">
-                {errors.humorFlavorStepTypeId}
-              </p>
-            ) : null}
-          </label>
+          <LookupField
+            label="Step Type"
+            value={draft.humorFlavorStepTypeId}
+            options={stepTypeOptions}
+            error={errors.humorFlavorStepTypeId}
+            onChange={(value) =>
+              setDraft((current) => ({
+                ...current,
+                humorFlavorStepTypeId: value,
+              }))
+            }
+          />
         </div>
       </div>
 
@@ -154,76 +219,43 @@ export function StepForm({
           LLM Config
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
+          <LookupField
+            label="Model"
+            value={draft.llmModelId}
+            options={llmModelOptions}
+            error={errors.llmModelId}
+            onChange={(value) => setDraft((current) => ({ ...current, llmModelId: value }))}
+          />
           <label className="block">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">Model ID</span>
+            <RequiredLabel>Temperature</RequiredLabel>
             <input
-              required
-              type="number"
-              min={1}
-              value={draft.llmModelId}
-              onChange={(event) =>
-                setDraft((current) => ({ ...current, llmModelId: event.target.value }))
-              }
-              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-            />
-            {errors.llmModelId ? (
-              <p className="mt-1 text-xs text-red-700 dark:text-red-300">{errors.llmModelId}</p>
-            ) : null}
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              Temperature
-            </span>
-            <input
-              required
               type="number"
               step="0.1"
               value={draft.llmTemperature}
               onChange={(event) =>
                 setDraft((current) => ({ ...current, llmTemperature: event.target.value }))
               }
-              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+              aria-invalid={Boolean(errors.llmTemperature)}
+              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 aria-[invalid=true]:border-red-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:aria-[invalid=true]:border-red-400"
             />
             {errors.llmTemperature ? (
               <p className="mt-1 text-xs text-red-700 dark:text-red-300">{errors.llmTemperature}</p>
             ) : null}
           </label>
-          <label className="block">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              Input Type ID
-            </span>
-            <input
-              required
-              type="number"
-              min={1}
-              value={draft.llmInputTypeId}
-              onChange={(event) =>
-                setDraft((current) => ({ ...current, llmInputTypeId: event.target.value }))
-              }
-              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-            />
-            {errors.llmInputTypeId ? (
-              <p className="mt-1 text-xs text-red-700 dark:text-red-300">{errors.llmInputTypeId}</p>
-            ) : null}
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-              Output Type ID
-            </span>
-            <input
-              required
-              type="number"
-              min={1}
-              value={draft.llmOutputTypeId}
-              onChange={(event) =>
-                setDraft((current) => ({ ...current, llmOutputTypeId: event.target.value }))
-              }
-              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-            />
-            {errors.llmOutputTypeId ? (
-              <p className="mt-1 text-xs text-red-700 dark:text-red-300">{errors.llmOutputTypeId}</p>
-            ) : null}
-          </label>
+          <LookupField
+            label="Input Type"
+            value={draft.llmInputTypeId}
+            options={llmInputTypeOptions}
+            error={errors.llmInputTypeId}
+            onChange={(value) => setDraft((current) => ({ ...current, llmInputTypeId: value }))}
+          />
+          <LookupField
+            label="Output Type"
+            value={draft.llmOutputTypeId}
+            options={llmOutputTypeOptions}
+            error={errors.llmOutputTypeId}
+            onChange={(value) => setDraft((current) => ({ ...current, llmOutputTypeId: value }))}
+          />
         </div>
       </div>
 
@@ -239,17 +271,15 @@ export function StepForm({
           </p>
         ) : null}
         <label className="block">
-          <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            LLM System Prompt
-          </span>
+          <RequiredLabel>LLM System Prompt</RequiredLabel>
           <textarea
-            required
             rows={4}
             value={draft.llmSystemPrompt}
             onChange={(event) =>
               setDraft((current) => ({ ...current, llmSystemPrompt: event.target.value }))
             }
-            className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            aria-invalid={Boolean(errors.llmSystemPrompt)}
+            className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 aria-[invalid=true]:border-red-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:aria-[invalid=true]:border-red-400"
           />
           {errors.llmSystemPrompt ? (
             <p className="mt-1 text-xs text-red-700 dark:text-red-300">{errors.llmSystemPrompt}</p>
@@ -257,17 +287,15 @@ export function StepForm({
         </label>
 
         <label className="block">
-          <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            LLM User Prompt
-          </span>
+          <RequiredLabel>LLM User Prompt</RequiredLabel>
           <textarea
-            required
             rows={4}
             value={draft.llmUserPrompt}
             onChange={(event) =>
               setDraft((current) => ({ ...current, llmUserPrompt: event.target.value }))
             }
-            className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+            aria-invalid={Boolean(errors.llmUserPrompt)}
+            className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-zinc-500 aria-[invalid=true]:border-red-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:aria-[invalid=true]:border-red-400"
           />
           {errors.llmUserPrompt ? (
             <p className="mt-1 text-xs text-red-700 dark:text-red-300">{errors.llmUserPrompt}</p>

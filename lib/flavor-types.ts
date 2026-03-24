@@ -1,6 +1,13 @@
 import type { FlavorValidationReferenceCatalog } from "@/lib/flavor-health";
 import type { StepTemplateKey } from "@/lib/flavor-step-templates";
+import type { HumorFlavorRow } from "@/lib/supabase/types";
 export type { FlavorValidationReferenceCatalog } from "@/lib/flavor-health";
+
+export type HumorFlavorRecord = HumorFlavorRow & {
+  name?: string | null;
+  tone?: string | null;
+  title?: string | null;
+};
 
 export type FlavorStep = {
   id: string;
@@ -21,6 +28,8 @@ export type FlavorStep = {
 
 export type HumorFlavor = {
   id: string;
+  rowId: number | null;
+  sourceRow: HumorFlavorRecord;
   name: string;
   slug: string | null;
   tone: string;

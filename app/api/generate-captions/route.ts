@@ -26,6 +26,9 @@ import {
 import { hasAdminAccess } from "@/lib/supabase/auth";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
+export const runtime = "nodejs";
+export const maxDuration = 420;
+
 type StageNumber = 1 | 2 | 3 | 4;
 
 type StageDetails = {
@@ -59,6 +62,9 @@ type CanonicalPayloadValidationError = {
 type UpstreamBodyDetails = {
   responseJson: unknown | null;
   responseText: string | null;
+  contentType: string | null;
+  bodyKind: "json" | "html" | "text" | "empty" | "unknown";
+  responsePreview: string | null;
 };
 
 type StageFailureContext = {
@@ -74,6 +80,15 @@ type StageFailureContext = {
   status?: number | null;
   responseJson?: unknown | null;
   responseText?: string | null;
+  upstreamContentType?: string | null;
+  upstreamBodyKind?: UpstreamBodyDetails["bodyKind"] | null;
+  responsePreview?: string | null;
+  selectedFlavor?: SelectedFlavorDebug | null;
+  normalizedHumorFlavorId?: string | null;
+  normalizedStepCount?: number | null;
+  orderedStepIds?: number[] | null;
+  totalDurationMs?: number | null;
+  flavorComplexity?: FlavorComplexitySummary | null;
   message: string;
 };
 
@@ -93,6 +108,9 @@ type CaptionRouteDebugPayload = {
   selectedFlavor: SelectedFlavorDebug | null;
   normalizedHumorFlavorId: string | null;
   normalizedStepCount: number;
+  payloadSizeBytes: number | null;
+  timingMs: Record<string, number>;
+  flavorComplexity: FlavorComplexitySummary | null;
   finalCaptionRequestBody: unknown;
   canonicalPayloadValidation: CanonicalPayloadValidationError | null;
   stepCompatibilityValidation: FlavorStepCompatibilityResult | null;
@@ -104,7 +122,15 @@ type CaptionRouteDebugPayload = {
 const FINAL_STEP_LLM_OUTPUT_TYPE_ID = 2;
 const DEFAULT_SPECIFICATION_VERSION = "v1";
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 30000;
-const GENERATE_CAPTIONS_TIMEOUT_MS = 120000;
+const GENERATE_CAPTIONS_TIMEOUT_ENV = "ASSIGNMENT5_GENERATE_CAPTIONS_TIMEOUT_MS";
+const DEFAULT_GENERATE_CAPTIONS_TIMEOUT_MS = 300000;
+const MAX_GENERATE_CAPTIONS_TIMEOUT_MS = 900000;
+const MAX_FLAVOR_STEP_COUNT_ENV = "ASSIGNMENT5_MAX_FLAVOR_STEP_COUNT";
+const MAX_FLAVOR_TOTAL_PROMPT_CHARS_ENV = "ASSIGNMENT5_MAX_FLAVOR_TOTAL_PROMPT_CHARS";
+const MAX_FLAVOR_STEP_PROMPT_CHARS_ENV = "ASSIGNMENT5_MAX_FLAVOR_STEP_PROMPT_CHARS";
+const DEFAULT_MAX_FLAVOR_STEP_COUNT = 24;
+const DEFAULT_MAX_FLAVOR_TOTAL_PROMPT_CHARS = 120000;
+const DEFAULT_MAX_FLAVOR_STEP_PROMPT_CHARS = 30000;
 const FINAL_STEP_JSON_FORMAT_MARKER = "Test Panel JSON response requirements:";
 const FINAL_STEP_JSON_FORMAT_GUIDANCE = [
   FINAL_STEP_JSON_FORMAT_MARKER,
@@ -163,13 +189,27 @@ type IdRow = {
 
 type LlmModelReferenceRow = {
   id: number;
+  name: string | null;
   llm_provider_id: number | null;
   provider_model_id: string | null;
+};
+
+type LlmInputTypeReferenceRow = {
+  id: number;
+  slug: string | null;
+  description: string | null;
 };
 
 type LlmOutputTypeReferenceRow = {
   id: number;
   slug: string | null;
+  description: string | null;
+};
+
+type HumorFlavorStepTypeReferenceRow = {
+  id: number;
+  slug: string | null;
+  description: string | null;
 };
 
 type FlavorPipelineStepDebug = {
@@ -188,6 +228,7 @@ type FlavorPipelineStepSummary = {
 
 type FlavorFailureDiagnostics = {
   flavorSlug: string | null;
+  flavorDescription: string | null;
   stepIds: number[];
   orderByValues: number[];
   finalStepLlmOutputTypeId: number | null;
@@ -208,6 +249,65 @@ type Stage4BuildResult = {
   stepCompatibilityValidation: FlavorStepCompatibilityResult;
   resolvedStepModels: ResolvedStepModel[];
   canonicalPayloadValidation: CanonicalPayloadValidationError | null;
+};
+
+type FlavorComplexitySummary = {
+  stepCount: number;
+  totalPromptChars: number;
+  maxStepPromptChars: number;
+  maxPromptStepId: string | null;
+  maxPromptStepOrder: number | null;
+};
+
+type FlavorComplexityLimits = {
+  maxStepCount: number;
+  maxTotalPromptChars: number;
+  maxStepPromptChars: number;
+};
+
+type FlavorComplexityViolation = {
+  reason: string;
+  likelyStepId: string | null;
+  likelyStepOrder: number | null;
+};
+
+type Stage4PreparedRequest = {
+  requestBody: Stage4RequestBody;
+  requestBodyJson: string;
+  normalizedStepPayload: ExternalPromptConfigStepPayload[];
+  payloadSizeBytes: number;
+  stepCompatibilityValidation: FlavorStepCompatibilityResult;
+  resolvedStepModels: ResolvedStepModel[];
+  canonicalPayloadValidation: CanonicalPayloadValidationError | null;
+  assemblePayloadMs: number;
+  flavorComplexity: FlavorComplexitySummary;
+};
+
+const GENERATE_CAPTIONS_TIMEOUT_MS = parseBoundedEnvInt(
+  GENERATE_CAPTIONS_TIMEOUT_ENV,
+  DEFAULT_GENERATE_CAPTIONS_TIMEOUT_MS,
+  DEFAULT_UPSTREAM_TIMEOUT_MS,
+  MAX_GENERATE_CAPTIONS_TIMEOUT_MS,
+);
+const FLAVOR_COMPLEXITY_LIMITS: FlavorComplexityLimits = {
+  maxStepCount: parseBoundedEnvInt(
+    MAX_FLAVOR_STEP_COUNT_ENV,
+    DEFAULT_MAX_FLAVOR_STEP_COUNT,
+    1,
+    100,
+  ),
+  maxTotalPromptChars: parseBoundedEnvInt(
+    MAX_FLAVOR_TOTAL_PROMPT_CHARS_ENV,
+    DEFAULT_MAX_FLAVOR_TOTAL_PROMPT_CHARS,
+    1000,
+    500000,
+  ),
+  maxStepPromptChars: parseBoundedEnvInt(
+    MAX_FLAVOR_STEP_PROMPT_CHARS_ENV,
+    DEFAULT_MAX_FLAVOR_STEP_PROMPT_CHARS,
+    500,
+    200000,
+  ),
 };
 
 class RequestTimeoutError extends Error {
@@ -263,6 +363,90 @@ function getErrorMessage(error: unknown): string {
   }
 
   return "Unknown error";
+}
+
+function parseBoundedEnvInt(
+  envName: string,
+  fallback: number,
+  minValue: number,
+  maxValue: number,
+): number {
+  const raw = process.env[envName]?.trim();
+  if (!raw) {
+    return fallback;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  const rounded = Math.floor(parsed);
+  if (rounded < minValue || rounded > maxValue) {
+    return fallback;
+  }
+
+  return rounded;
+}
+
+function byteLengthUtf8(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function summarizeFlavorComplexity(steps: NormalizedFlavorPipelineStep[]): FlavorComplexitySummary {
+  let totalPromptChars = 0;
+  let maxStepPromptChars = 0;
+  let maxPromptStepId: string | null = null;
+  let maxPromptStepOrder: number | null = null;
+
+  for (const step of steps) {
+    const promptSize = step.llmSystemPrompt.length + step.llmUserPrompt.length;
+    totalPromptChars += promptSize;
+    if (promptSize > maxStepPromptChars) {
+      maxStepPromptChars = promptSize;
+      maxPromptStepId = step.id;
+      maxPromptStepOrder = step.orderBy;
+    }
+  }
+
+  return {
+    stepCount: steps.length,
+    totalPromptChars,
+    maxStepPromptChars,
+    maxPromptStepId,
+    maxPromptStepOrder,
+  };
+}
+
+function getFlavorComplexityViolation(
+  complexity: FlavorComplexitySummary,
+  limits: FlavorComplexityLimits,
+): FlavorComplexityViolation | null {
+  if (complexity.stepCount > limits.maxStepCount) {
+    return {
+      reason: `Flavor has ${complexity.stepCount} steps, above configured limit ${limits.maxStepCount}.`,
+      likelyStepId: complexity.maxPromptStepId,
+      likelyStepOrder: complexity.maxPromptStepOrder,
+    };
+  }
+
+  if (complexity.totalPromptChars > limits.maxTotalPromptChars) {
+    return {
+      reason: `Flavor prompts total ${complexity.totalPromptChars} chars, above configured limit ${limits.maxTotalPromptChars}.`,
+      likelyStepId: complexity.maxPromptStepId,
+      likelyStepOrder: complexity.maxPromptStepOrder,
+    };
+  }
+
+  if (complexity.maxStepPromptChars > limits.maxStepPromptChars) {
+    return {
+      reason: `Largest step prompt is ${complexity.maxStepPromptChars} chars, above configured limit ${limits.maxStepPromptChars}.`,
+      likelyStepId: complexity.maxPromptStepId,
+      likelyStepOrder: complexity.maxPromptStepOrder,
+    };
+  }
+
+  return null;
 }
 
 function getExternalApiBearerToken(supabaseJwt: string): string {
@@ -529,31 +713,86 @@ async function getAuthorizedProfileFromJwt(supabaseJwt: string) {
 }
 
 async function readUpstreamBodySafely(response: Response): Promise<UpstreamBodyDetails> {
+  const contentType = response.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() ?? null;
+
   try {
     const responseText = await response.text();
     const trimmed = responseText.trim();
 
     if (trimmed.length === 0) {
-      return { responseJson: null, responseText: null };
+      return {
+        responseJson: null,
+        responseText: null,
+        contentType,
+        bodyKind: "empty",
+        responsePreview: null,
+      };
     }
 
     try {
       return {
         responseJson: JSON.parse(trimmed) as unknown,
         responseText: trimmed,
+        contentType,
+        bodyKind: "json",
+        responsePreview: null,
       };
     } catch {
+      const bodyKind =
+        contentType?.includes("html") || /<!doctype html|<html[\s>]|<body[\s>]|<head[\s>]/i.test(trimmed)
+          ? "html"
+          : contentType?.includes("json")
+            ? "unknown"
+            : "text";
+      const responsePreview =
+        bodyKind === "html"
+          ? "HTML error page returned by upstream. Raw markup omitted."
+          : trimmed.length > 400
+            ? `${trimmed.slice(0, 397)}...`
+            : trimmed;
+
       return {
         responseJson: null,
         responseText: trimmed,
+        contentType,
+        bodyKind,
+        responsePreview,
       };
     }
   } catch {
     return {
       responseJson: null,
       responseText: null,
+      contentType,
+      bodyKind: "unknown",
+      responsePreview: null,
     };
   }
+}
+
+function buildStageFailureMessage(context: StageFailureContext): string {
+  const flavorLabel =
+    context.selectedFlavor?.name?.trim() ||
+    context.normalizedHumorFlavorId?.trim() ||
+    "this flavor";
+
+  if (context.phase === "generating_captions" && context.status === 504) {
+    return `The caption API timed out while generating captions for ${flavorLabel}. This flavor may be too slow or the upstream service is temporarily unavailable.`;
+  }
+
+  if (context.phase === "generating_captions" && context.upstreamBodyKind === "html") {
+    return `The caption API returned an HTML error page while generating captions for ${flavorLabel}. Raw upstream markup was omitted from the UI.`;
+  }
+
+  const detail = [
+    context.message,
+    context.status ? `status ${context.status}` : null,
+    context.upstreamBodyKind === "text" ? context.responsePreview ?? null : null,
+  ]
+    .filter(Boolean)
+    .join(": ");
+
+  return detail || `Upstream request failed during ${context.stage.name}.`;
 }
 
 function createStageError(context: StageFailureContext): Response {
@@ -562,7 +801,6 @@ function createStageError(context: StageFailureContext): Response {
     phase,
     url,
     method,
-    message,
     errorCode,
     finalCaptionRequestBody = null,
     canonicalPayloadValidation = null,
@@ -570,15 +808,35 @@ function createStageError(context: StageFailureContext): Response {
     resolvedStepModels = null,
     status = null,
     responseJson = null,
-    responseText = null,
+    upstreamContentType = null,
+    upstreamBodyKind = null,
+    responsePreview = null,
+    selectedFlavor = null,
+    normalizedHumorFlavorId = null,
+    normalizedStepCount = null,
+    orderedStepIds = null,
+    totalDurationMs = null,
+    flavorComplexity = null,
   } = context;
-
-  const detail = [message, status ? `status ${status}` : null, responseText].filter(Boolean).join(": ");
+  const safeMessage = buildStageFailureMessage(context);
+  const errorDiagnostics = {
+    phase: phase ?? null,
+    selectedFlavor,
+    normalizedHumorFlavorId,
+    normalizedStepCount,
+    orderedStepIds,
+    totalDurationMs,
+    upstreamStatus: status,
+    upstreamContentType,
+    upstreamBodyKind,
+    upstreamBodyPreview: responsePreview,
+    flavorComplexity,
+  };
 
   return Response.json(
     {
       error: `Stage ${stage.number} failed: ${stage.name}`,
-      message: detail || `Upstream request failed during ${stage.name}.`,
+      message: safeMessage,
       errorCode: errorCode ?? null,
       phase: phase ?? null,
       stageNumber: stage.number,
@@ -592,7 +850,17 @@ function createStageError(context: StageFailureContext): Response {
       stepCompatibilityValidation,
       resolvedStepModels,
       responseJson,
-      responseText,
+      responseText: upstreamBodyKind === "text" ? responsePreview : null,
+      upstreamContentType,
+      upstreamBodyKind,
+      upstreamBodyPreview: responsePreview,
+      selectedFlavor,
+      normalizedHumorFlavorId,
+      normalizedStepCount,
+      orderedStepIds,
+      totalDurationMs,
+      flavorComplexity,
+      errorDiagnostics,
     },
     { status: status && status >= 400 ? status : 500 },
   );
@@ -742,7 +1010,7 @@ async function loadFlavorFailureDiagnostics(
     supabase
       .schema("public")
       .from("humor_flavors")
-      .select("slug")
+      .select("slug, description")
       .eq("id", numericFlavorId)
       .limit(1),
   ]);
@@ -762,10 +1030,12 @@ async function loadFlavorFailureDiagnostics(
   }
 
   const flavorSlug = (flavorResult.data?.[0]?.slug ?? null) as string | null;
+  const flavorDescription = (flavorResult.data?.[0]?.description ?? null) as string | null;
   const finalStepFromPipeline = steps[steps.length - 1] ?? null;
 
   return {
     flavorSlug,
+    flavorDescription,
     stepIds: steps.map((step) => step.id),
     orderByValues: steps.map((step) => step.orderBy),
     finalStepLlmOutputTypeId: finalStep?.llmOutputTypeId ?? finalStepFromPipeline?.llmOutputTypeId ?? null,
@@ -777,20 +1047,23 @@ async function logFlavorFailureDiagnostics(
   humorFlavorId: string,
   supabaseJwt: string,
   finalStep: FinalStepDebug | null,
-): Promise<void> {
+): Promise<FlavorFailureDiagnostics | null> {
   const diagnostics = await loadFlavorFailureDiagnostics(humorFlavorId, supabaseJwt, finalStep);
   if (!diagnostics) {
-    return;
+    return null;
   }
 
   console.warn("[generate-captions][pipeline] flavor failure diagnostics", {
     humorFlavorId,
     flavorSlug: diagnostics.flavorSlug,
+    flavorDescription: diagnostics.flavorDescription,
     stepIds: diagnostics.stepIds,
     orderBy: diagnostics.orderByValues,
     finalStepLlmOutputTypeId: diagnostics.finalStepLlmOutputTypeId,
     finalStepPromptPreview: diagnostics.finalStepPromptPreview,
   });
+
+  return diagnostics;
 }
 
 async function ensureFinalStepPrompt(
@@ -866,28 +1139,49 @@ async function loadFlavorValidationData(humorFlavorId: string, supabaseJwt: stri
   }
 
   const supabase = createServerSupabaseClient(supabaseJwt);
-  const [flavorResult, stepsResult, llmModelsResult, llmInputTypesResult, llmOutputTypesResult, stepTypesResult, llmProvidersResult] =
+  const startedAt = Date.now();
+  const timed = async <T,>(promise: PromiseLike<T>) => {
+    const at = Date.now();
+    const value = await promise;
+    return { value, durationMs: Date.now() - at };
+  };
+
+  const [flavorTimed, stepsTimed, llmModelsTimed, llmInputTypesTimed, llmOutputTypesTimed, stepTypesTimed, llmProvidersTimed] =
     await Promise.all([
-      supabase
-        .schema("public")
-        .from("humor_flavors")
-        .select("id, slug, description")
-        .eq("id", numericFlavorId)
-        .limit(1),
-      supabase
-        .schema("public")
-        .from("humor_flavor_steps")
-        .select(
-          "id, humor_flavor_id, order_by, humor_flavor_step_type_id, llm_input_type_id, llm_output_type_id, llm_model_id, llm_temperature, description, llm_system_prompt, llm_user_prompt",
-        )
-        .eq("humor_flavor_id", numericFlavorId)
-        .order("order_by", { ascending: true }),
-      supabase.schema("public").from("llm_models").select("id, llm_provider_id, provider_model_id"),
-      supabase.schema("public").from("llm_input_types").select("id"),
-      supabase.schema("public").from("llm_output_types").select("id, slug"),
-      supabase.schema("public").from("humor_flavor_step_types").select("id"),
-      supabase.schema("public").from("llm_providers").select("id"),
+      timed(
+        supabase
+          .schema("public")
+          .from("humor_flavors")
+          .select("id, slug, description")
+          .eq("id", numericFlavorId)
+          .limit(1),
+      ),
+      timed(
+        supabase
+          .schema("public")
+          .from("humor_flavor_steps")
+          .select(
+            "id, humor_flavor_id, order_by, humor_flavor_step_type_id, llm_input_type_id, llm_output_type_id, llm_model_id, llm_temperature, description, llm_system_prompt, llm_user_prompt",
+          )
+          .eq("humor_flavor_id", numericFlavorId)
+          .order("order_by", { ascending: true }),
+      ),
+      timed(
+        supabase.schema("public").from("llm_models").select("id, name, llm_provider_id, provider_model_id"),
+      ),
+      timed(supabase.schema("public").from("llm_input_types").select("id, slug, description")),
+      timed(supabase.schema("public").from("llm_output_types").select("id, slug, description")),
+      timed(supabase.schema("public").from("humor_flavor_step_types").select("id, slug, description")),
+      timed(supabase.schema("public").from("llm_providers").select("id")),
     ]);
+
+  const flavorResult = flavorTimed.value;
+  const stepsResult = stepsTimed.value;
+  const llmModelsResult = llmModelsTimed.value;
+  const llmInputTypesResult = llmInputTypesTimed.value;
+  const llmOutputTypesResult = llmOutputTypesTimed.value;
+  const stepTypesResult = stepTypesTimed.value;
+  const llmProvidersResult = llmProvidersTimed.value;
 
   if (flavorResult.error) {
     console.warn("[generate-captions] failed to load flavor for validation", {
@@ -926,13 +1220,25 @@ async function loadFlavorValidationData(humorFlavorId: string, supabaseJwt: stri
   const referenceCatalog: FlavorValidationReferenceCatalog = {
     llmModels: ((llmModelsResult.data ?? []) as LlmModelReferenceRow[]).map((row) => ({
       id: row.id,
+      name: row.name,
       llmProviderId: row.llm_provider_id,
       providerModelId: row.provider_model_id,
+    })),
+    llmInputTypes: ((llmInputTypesResult.data ?? []) as LlmInputTypeReferenceRow[]).map((row) => ({
+      id: row.id,
+      slug: row.slug,
+      description: row.description,
     })),
     llmInputTypeIds: ((llmInputTypesResult.data ?? []) as IdRow[]).map((row) => row.id),
     llmOutputTypes: ((llmOutputTypesResult.data ?? []) as LlmOutputTypeReferenceRow[]).map((row) => ({
       id: row.id,
       slug: row.slug,
+      description: row.description,
+    })),
+    humorFlavorStepTypes: ((stepTypesResult.data ?? []) as HumorFlavorStepTypeReferenceRow[]).map((row) => ({
+      id: row.id,
+      slug: row.slug,
+      description: row.description,
     })),
     humorFlavorStepTypeIds: ((stepTypesResult.data ?? []) as IdRow[]).map((row) => row.id),
     llmProviderIds: ((llmProvidersResult.data ?? []) as IdRow[]).map((row) => row.id),
@@ -949,6 +1255,16 @@ async function loadFlavorValidationData(humorFlavorId: string, supabaseJwt: stri
     flavor,
     steps,
     referenceCatalog,
+    timingMs: {
+      total: Date.now() - startedAt,
+      loadFlavor: flavorTimed.durationMs,
+      loadSteps: stepsTimed.durationMs,
+      loadLlmModels: llmModelsTimed.durationMs,
+      loadLlmInputTypes: llmInputTypesTimed.durationMs,
+      loadLlmOutputTypes: llmOutputTypesTimed.durationMs,
+      loadStepTypes: stepTypesTimed.durationMs,
+      loadLlmProviders: llmProvidersTimed.durationMs,
+    },
   };
 }
 
@@ -1153,28 +1469,27 @@ async function registerImageFromUrl(cdnUrl: string, externalApiBearerToken: stri
 }
 
 async function generateCaptionsForFlavor(
-  imageId: string,
-  humorFlavorId: string,
+  preparedRequest: Stage4PreparedRequest,
   externalApiBearerToken: string,
   supabaseJwt: string,
+  imageId: string,
+  humorFlavorId: string,
   selectedFlavor: SelectedFlavorDebug | null,
   finalStep: FinalStepDebug | null,
-  normalizedSteps: NormalizedFlavorPipelineStep[],
-  referenceCatalog: FlavorValidationReferenceCatalog,
-  specificationVersion?: string,
 ) {
   const stage: StageDetails = { number: 4, name: "generate captions for selected flavor" };
   const url = buildExternalApiUrl(GENERATE_CAPTIONS_PATH);
   const method = "POST";
-  let requestBody: unknown = null;
-  let resolvedStepModels: ResolvedStepModel[] | null = null;
-  let stepCompatibilityValidation: FlavorStepCompatibilityResult | null = null;
+  const callStartedAt = Date.now();
   const normalizedImageId = imageId.trim();
   const normalizedHumorFlavorId = humorFlavorId.trim();
-  const normalizedSpecificationVersion =
-    specificationVersion?.trim() && specificationVersion.trim().length > 0
-      ? specificationVersion.trim()
-      : DEFAULT_SPECIFICATION_VERSION;
+  const requestBody = preparedRequest.requestBody;
+  const requestBodyJson = preparedRequest.requestBodyJson;
+  const stepCompatibilityValidation = preparedRequest.stepCompatibilityValidation;
+  const resolvedStepModels = preparedRequest.resolvedStepModels;
+  const timingMs: Record<string, number> = {
+    assemblePayload: preparedRequest.assemblePayloadMs,
+  };
 
   try {
     if (!normalizedImageId) {
@@ -1207,72 +1522,60 @@ async function generateCaptionsForFlavor(
       } satisfies StageFailureContext;
     }
 
-    const payloadBuild = buildStage4RequestBody({
-      imageId: normalizedImageId,
-      humorFlavorId: normalizedHumorFlavorId,
-      flavorName: selectedFlavor?.name ?? null,
-      specificationVersion: normalizedSpecificationVersion,
-      normalizedSteps,
-      referenceCatalog,
-    });
-    const normalizedStepPayload = payloadBuild.normalizedStepPayload;
-    stepCompatibilityValidation = payloadBuild.stepCompatibilityValidation;
-    resolvedStepModels = payloadBuild.resolvedStepModels;
-
-    if (!payloadBuild.requestBody) {
-      throw {
-        stage,
-        phase: "generating_captions",
-        url,
-        method,
-        errorCode: "canonical_payload_validation_failed",
-        status: 422,
-        canonicalPayloadValidation: payloadBuild.canonicalPayloadValidation,
-        stepCompatibilityValidation: payloadBuild.stepCompatibilityValidation,
-        resolvedStepModels: payloadBuild.resolvedStepModels,
-        message:
-          payloadBuild.canonicalPayloadValidation?.reason ??
-          `Payload construction failed for Stage 4: ${payloadBuild.issues.join(" | ")}`,
-        responseJson: {
-          payloadBuildIssues: payloadBuild.issues,
-          normalizedStepCount: normalizedStepPayload.length,
-          normalizedStepPreview: normalizedStepPayload,
-          stepCompatibilityValidation: payloadBuild.stepCompatibilityValidation,
-          resolvedStepModels: payloadBuild.resolvedStepModels,
-          canonicalPayloadValidation: payloadBuild.canonicalPayloadValidation,
-        },
-        finalCaptionRequestBody: null,
-      } satisfies StageFailureContext;
-    }
-
-    const richRequestBody = payloadBuild.requestBody;
-
     console.info("[generate-captions][stage4] request body", {
-      requestBody: sanitizeForLog(richRequestBody),
+      requestBody: sanitizeForLog(requestBody),
       selectedFlavor,
+      normalizedStepCount: preparedRequest.normalizedStepPayload.length,
+      payloadSizeBytes: preparedRequest.payloadSizeBytes,
+      flavorComplexity: preparedRequest.flavorComplexity,
     });
 
-    requestBody = richRequestBody;
-    const response = await fetchWithTimeout(url, {
-      method,
-      headers: {
-        Authorization: `Bearer ${externalApiBearerToken}`,
-        "Content-Type": "application/json",
+    const upstreamStartedAt = Date.now();
+    const response = await fetchWithTimeout(
+      url,
+      {
+        method,
+        headers: {
+          Authorization: `Bearer ${externalApiBearerToken}`,
+          "Content-Type": "application/json",
+        },
+        body: requestBodyJson,
+        cache: "no-store",
       },
-      body: JSON.stringify(requestBody),
-      cache: "no-store",
-    }, GENERATE_CAPTIONS_TIMEOUT_MS);
+      GENERATE_CAPTIONS_TIMEOUT_MS,
+    );
+    timingMs.callGenerateCaptions = Date.now() - upstreamStartedAt;
 
-    const { responseJson, responseText } = await readUpstreamBodySafely(response);
+    const receiveStartedAt = Date.now();
+    const { responseJson, responseText, contentType, bodyKind, responsePreview } =
+      await readUpstreamBodySafely(response);
+    timingMs.receiveResponse = Date.now() - receiveStartedAt;
+    timingMs.totalStage4 = Date.now() - callStartedAt;
 
     console.info("[generate-captions][stage4] raw response json", {
       ok: response.ok,
       status: response.status,
+      upstreamContentType: contentType,
+      upstreamBodyKind: bodyKind,
       responseJson,
+      timingMs,
     });
 
     if (!response.ok) {
-      await logFlavorFailureDiagnostics(normalizedHumorFlavorId, supabaseJwt, finalStep);
+      const failureDiagnostics = await logFlavorFailureDiagnostics(normalizedHumorFlavorId, supabaseJwt, finalStep);
+      console.warn("[generate-captions][stage4] upstream failure", {
+        phase: "generating_captions",
+        selectedFlavorId: normalizedHumorFlavorId,
+        selectedFlavorName:
+          selectedFlavor?.name ?? failureDiagnostics?.flavorDescription ?? failureDiagnostics?.flavorSlug ?? null,
+        stepCount: failureDiagnostics?.stepIds.length ?? preparedRequest.normalizedStepPayload.length,
+        orderedStepIds: failureDiagnostics?.stepIds ?? null,
+        totalRequestDurationMs: Date.now() - callStartedAt,
+        upstreamStatus: response.status,
+        upstreamContentType: contentType,
+        upstreamBodyKind: bodyKind,
+        upstreamBodyPreview: responsePreview,
+      });
 
       if (responseContainsMissingStep2Output(responseJson, responseText)) {
         await logMissingStep2OutputFailure(normalizedHumorFlavorId, supabaseJwt);
@@ -1304,7 +1607,21 @@ async function generateCaptionsForFlavor(
         stepCompatibilityValidation,
         resolvedStepModels,
         status: response.status,
-        responseJson,
+        upstreamContentType: contentType,
+        upstreamBodyKind: bodyKind,
+        responsePreview,
+        selectedFlavor,
+        normalizedHumorFlavorId,
+        normalizedStepCount: preparedRequest.normalizedStepPayload.length,
+        orderedStepIds: failureDiagnostics?.stepIds ?? null,
+        totalDurationMs: Date.now() - callStartedAt,
+        flavorComplexity: preparedRequest.flavorComplexity,
+        responseJson: {
+          responseJson,
+          timingMs,
+          payloadSizeBytes: preparedRequest.payloadSizeBytes,
+          flavorComplexity: preparedRequest.flavorComplexity,
+        },
         responseText,
         message: "Could not generate captions",
       } satisfies StageFailureContext;
@@ -1320,12 +1637,25 @@ async function generateCaptionsForFlavor(
         stepCompatibilityValidation,
         resolvedStepModels,
         status: response.status,
-        responseJson,
+        upstreamContentType: contentType,
+        upstreamBodyKind: bodyKind,
+        responsePreview,
+        selectedFlavor,
+        normalizedHumorFlavorId,
+        normalizedStepCount: preparedRequest.normalizedStepPayload.length,
+        totalDurationMs: Date.now() - callStartedAt,
+        flavorComplexity: preparedRequest.flavorComplexity,
+        responseJson: {
+          timingMs,
+          payloadSizeBytes: preparedRequest.payloadSizeBytes,
+          flavorComplexity: preparedRequest.flavorComplexity,
+        },
         responseText,
         message: "Caption generation response was empty",
       } satisfies StageFailureContext;
     }
 
+    const parseStartedAt = Date.now();
     const extracted = extractCaptionsFromApiResponse(responseJson);
     if (extracted.length === 0) {
       console.warn("[generate-captions][stage4] no displayable captions extracted", {
@@ -1335,10 +1665,13 @@ async function generateCaptionsForFlavor(
     }
 
     const parsedCaptions = normalizeCaptions(extracted);
+    timingMs.parseCaptions = Date.now() - parseStartedAt;
+    timingMs.totalStage4 = Date.now() - callStartedAt;
 
     console.info("[generate-captions][stage4] parsed captions", {
       count: parsedCaptions.length,
       parsedResult: parsedCaptions,
+      timingMs,
     });
 
     return {
@@ -1347,12 +1680,15 @@ async function generateCaptionsForFlavor(
         phase: "generating_captions",
         selectedFlavor,
         normalizedHumorFlavorId,
-        normalizedStepCount: normalizedStepPayload.length,
+        normalizedStepCount: preparedRequest.normalizedStepPayload.length,
+        payloadSizeBytes: preparedRequest.payloadSizeBytes,
+        timingMs,
+        flavorComplexity: preparedRequest.flavorComplexity,
         finalCaptionRequestBody: requestBody,
-        canonicalPayloadValidation: null,
+        canonicalPayloadValidation: preparedRequest.canonicalPayloadValidation,
         stepCompatibilityValidation,
         resolvedStepModels,
-        externalPromptConfig: isRecord(requestBody) ? requestBody.externalPromptConfig ?? null : null,
+        externalPromptConfig: requestBody.externalPromptConfig,
         rawApiResponse: {
           status: response.status,
           responseJson,
@@ -1361,6 +1697,65 @@ async function generateCaptionsForFlavor(
       } satisfies CaptionRouteDebugPayload,
     };
   } catch (error) {
+    if (error instanceof RequestTimeoutError) {
+      const failureDiagnostics = await logFlavorFailureDiagnostics(normalizedHumorFlavorId, supabaseJwt, finalStep);
+      const likelyStepText =
+        preparedRequest.flavorComplexity.maxPromptStepOrder !== null
+          ? `Likely bottleneck: step ${preparedRequest.flavorComplexity.maxPromptStepOrder}${
+              preparedRequest.flavorComplexity.maxPromptStepId
+                ? ` (id ${preparedRequest.flavorComplexity.maxPromptStepId})`
+                : ""
+            } has the largest prompt (${preparedRequest.flavorComplexity.maxStepPromptChars} chars).`
+          : "Likely bottleneck: one or more large flavor steps.";
+
+      console.warn("[generate-captions][stage4] upstream timeout", {
+        phase: "generating_captions",
+        selectedFlavorId: normalizedHumorFlavorId,
+        selectedFlavorName:
+          selectedFlavor?.name ?? failureDiagnostics?.flavorDescription ?? failureDiagnostics?.flavorSlug ?? null,
+        stepCount: failureDiagnostics?.stepIds.length ?? preparedRequest.normalizedStepPayload.length,
+        orderedStepIds: failureDiagnostics?.stepIds ?? null,
+        totalRequestDurationMs: Date.now() - callStartedAt,
+        upstreamStatus: 504,
+        upstreamContentType: null,
+        upstreamBodyKind: "empty",
+      });
+
+      throw {
+        stage,
+        phase: "generating_captions",
+        url,
+        method,
+        errorCode: "upstream_timeout",
+        finalCaptionRequestBody: requestBody,
+        stepCompatibilityValidation,
+        resolvedStepModels,
+        status: 504,
+        upstreamBodyKind: "empty",
+        selectedFlavor,
+        normalizedHumorFlavorId,
+        normalizedStepCount: preparedRequest.normalizedStepPayload.length,
+        orderedStepIds: failureDiagnostics?.stepIds ?? null,
+        totalDurationMs: Date.now() - callStartedAt,
+        flavorComplexity: preparedRequest.flavorComplexity,
+        responseJson: {
+          timeoutMs: error.timeoutMs,
+          timingMs: {
+            ...timingMs,
+            totalStage4: Date.now() - callStartedAt,
+          },
+          payloadSizeBytes: preparedRequest.payloadSizeBytes,
+          normalizedStepCount: preparedRequest.normalizedStepPayload.length,
+          flavorComplexity: preparedRequest.flavorComplexity,
+          likelyBottleneckStepId: preparedRequest.flavorComplexity.maxPromptStepId,
+          likelyBottleneckStepOrder: preparedRequest.flavorComplexity.maxPromptStepOrder,
+        },
+        message: `Upstream caption generation timed out after ${error.timeoutMs}ms for flavor ${
+          selectedFlavor?.name ?? normalizedHumorFlavorId
+        }. ${likelyStepText}`,
+      } satisfies StageFailureContext;
+    }
+
     if (isRecord(error) && "stage" in error) {
       throw error;
     }
@@ -1409,6 +1804,8 @@ function parseSelectedFlavorDebug(value: FormDataEntryValue | null): SelectedFla
 
 export async function POST(request: Request) {
   try {
+    const requestStartedAt = Date.now();
+    const timingMs: Record<string, number> = {};
     const formData = await request.formData();
     const image = formData.get("image");
     const humorFlavorId = formData.get("humorFlavorId");
@@ -1480,7 +1877,9 @@ export async function POST(request: Request) {
       );
     }
 
+    const validationLoadStartedAt = Date.now();
     const flavorValidationData = await loadFlavorValidationData(normalizedHumorFlavorId, supabaseJwt);
+    timingMs.loadValidationData = Date.now() - validationLoadStartedAt;
     if (!flavorValidationData) {
       return Response.json(
         {
@@ -1569,28 +1968,123 @@ export async function POST(request: Request) {
       );
     }
 
+    const flavorComplexity = summarizeFlavorComplexity(normalizedPipelineValidation.normalizedSteps);
+    const complexityViolation = getFlavorComplexityViolation(flavorComplexity, FLAVOR_COMPLEXITY_LIMITS);
+    if (complexityViolation) {
+      return Response.json(
+        {
+          error: "Selected humor flavor is too expensive to run safely.",
+          message: `${complexityViolation.reason} Likely bottleneck step: ${
+            complexityViolation.likelyStepOrder ?? "unknown"
+          }${complexityViolation.likelyStepId ? ` (id ${complexityViolation.likelyStepId})` : ""}.`,
+          phase: "validating_flavor",
+          errorCode: "flavor_complexity_limit_exceeded",
+          flavorComplexity,
+          limits: FLAVOR_COMPLEXITY_LIMITS,
+        },
+        { status: 422 },
+      );
+    }
+
+    const assemblePayloadStartedAt = Date.now();
+    const stage4PayloadBuild = buildStage4RequestBody({
+      imageId: "__PENDING_IMAGE_ID__",
+      humorFlavorId: normalizedHumorFlavorId,
+      flavorName: selectedFlavor?.name ?? null,
+      specificationVersion,
+      normalizedSteps: normalizedPipelineValidation.normalizedSteps,
+      referenceCatalog: flavorValidationData.referenceCatalog,
+    });
+    timingMs.assemblePayload = Date.now() - assemblePayloadStartedAt;
+    if (!stage4PayloadBuild.requestBody) {
+      return Response.json(
+        {
+          error: "Selected humor flavor payload failed validation.",
+          message:
+            stage4PayloadBuild.canonicalPayloadValidation?.reason ??
+            `Payload construction failed: ${stage4PayloadBuild.issues.join(" | ")}`,
+          phase: "generating_captions",
+          errorCode: "canonical_payload_validation_failed",
+          canonicalPayloadValidation: stage4PayloadBuild.canonicalPayloadValidation,
+          stepCompatibilityValidation: stage4PayloadBuild.stepCompatibilityValidation,
+          resolvedStepModels: stage4PayloadBuild.resolvedStepModels,
+          normalizedStepCount: stage4PayloadBuild.normalizedStepPayload.length,
+          normalizedStepPreview: stage4PayloadBuild.normalizedStepPayload,
+        },
+        { status: 422 },
+      );
+    }
+
     const contentType = image.type || "application/octet-stream";
     const externalApiBearerToken = getExternalApiBearerToken(supabaseJwt);
+    const presignedStartedAt = Date.now();
     const { presignedUrl, cdnUrl } = await generatePresignedUrl(contentType, externalApiBearerToken);
+    timingMs.generatePresignedUrl = Date.now() - presignedStartedAt;
+    const uploadStartedAt = Date.now();
     await uploadToPresignedUrl(presignedUrl, image);
+    timingMs.uploadImageBytes = Date.now() - uploadStartedAt;
+    const registerStartedAt = Date.now();
     const imageId = await registerImageFromUrl(cdnUrl, externalApiBearerToken);
+    timingMs.registerImage = Date.now() - registerStartedAt;
 
     console.info("[generate-captions] selected flavor", selectedFlavor);
     console.info("[generate-captions] selected flavor id", normalizedHumorFlavorId);
+    console.info("[generate-captions][timing] flavor + payload preflight", {
+      flavorId: normalizedHumorFlavorId,
+      flavorSlug: flavorValidationData.flavor.slug,
+      stepCount: normalizedPipelineValidation.normalizedSteps.length,
+      flavorComplexity,
+      validationTimingMs: flavorValidationData.timingMs,
+      requestTimingMs: timingMs,
+      generateCaptionsTimeoutMs: GENERATE_CAPTIONS_TIMEOUT_MS,
+    });
 
     const finalStep = await ensureFinalStepPrompt(normalizedHumorFlavorId, supabaseJwt);
 
+    const stage4RequestBody: Stage4RequestBody = {
+      ...stage4PayloadBuild.requestBody,
+      imageId: imageId.trim(),
+    };
+    const stage4RequestBodyJson = JSON.stringify(stage4RequestBody);
+    const preparedStage4: Stage4PreparedRequest = {
+      requestBody: stage4RequestBody,
+      requestBodyJson: stage4RequestBodyJson,
+      normalizedStepPayload: stage4PayloadBuild.normalizedStepPayload,
+      payloadSizeBytes: byteLengthUtf8(stage4RequestBodyJson),
+      stepCompatibilityValidation: stage4PayloadBuild.stepCompatibilityValidation,
+      resolvedStepModels: stage4PayloadBuild.resolvedStepModels,
+      canonicalPayloadValidation: stage4PayloadBuild.canonicalPayloadValidation,
+      assemblePayloadMs: timingMs.assemblePayload ?? 0,
+      flavorComplexity,
+    };
+
+    const stage4StartedAt = Date.now();
     const captionsPayload = await generateCaptionsForFlavor(
-      imageId,
-      normalizedHumorFlavorId,
+      preparedStage4,
       externalApiBearerToken,
       supabaseJwt,
+      imageId,
+      normalizedHumorFlavorId,
       selectedFlavor,
       finalStep,
-      normalizedPipelineValidation.normalizedSteps,
-      flavorValidationData.referenceCatalog,
-      specificationVersion,
     );
+    timingMs.generateCaptionsStage4 = Date.now() - stage4StartedAt;
+    timingMs.totalRequest = Date.now() - requestStartedAt;
+    const debugTimingMs =
+      isRecord(captionsPayload.debug) && isRecord(captionsPayload.debug.timingMs)
+        ? (captionsPayload.debug.timingMs as Record<string, number>)
+        : {};
+    console.info("[generate-captions][timing] request completed", {
+      flavorId: normalizedHumorFlavorId,
+      flavorSlug: flavorValidationData.flavor.slug,
+      stepCount: normalizedPipelineValidation.normalizedSteps.length,
+      payloadSizeBytes: preparedStage4.payloadSizeBytes,
+      flavorComplexity,
+      validationTimingMs: flavorValidationData.timingMs,
+      requestTimingMs: timingMs,
+      stage4TimingMs: debugTimingMs,
+      totalMs: timingMs.totalRequest,
+    });
 
     return Response.json({
       ...captionsPayload,
@@ -1603,6 +2097,23 @@ export async function POST(request: Request) {
         },
         normalizedHumorFlavorId,
         normalizedStepCount: normalizedStepPayload.length,
+        payloadSizeBytes: preparedStage4.payloadSizeBytes,
+        timingMs: {
+          ...timingMs,
+          loadFlavor: flavorValidationData.timingMs.loadFlavor,
+          loadSteps: flavorValidationData.timingMs.loadSteps,
+          loadReferenceTables:
+            flavorValidationData.timingMs.loadLlmModels +
+            flavorValidationData.timingMs.loadLlmInputTypes +
+            flavorValidationData.timingMs.loadLlmOutputTypes +
+            flavorValidationData.timingMs.loadStepTypes +
+            flavorValidationData.timingMs.loadLlmProviders,
+          ...(isRecord(captionsPayload.debug) && isRecord(captionsPayload.debug.timingMs)
+            ? (captionsPayload.debug.timingMs as Record<string, number>)
+            : {}),
+          totalRequest: Date.now() - requestStartedAt,
+        },
+        flavorComplexity,
         finalCaptionRequestBody: isRecord(captionsPayload.debug) ? captionsPayload.debug.finalCaptionRequestBody : null,
         canonicalPayloadValidation:
           isRecord(captionsPayload.debug) ? captionsPayload.debug.canonicalPayloadValidation ?? null : null,
@@ -1647,6 +2158,20 @@ export async function POST(request: Request) {
           resolvedStepModels: "resolvedStepModels" in error ? (error.resolvedStepModels as ResolvedStepModel[] | null) : null,
           responseJson: "responseJson" in error ? error.responseJson : null,
           responseText: typeof error.responseText === "string" ? error.responseText : null,
+          upstreamContentType: typeof error.upstreamContentType === "string" ? error.upstreamContentType : null,
+          upstreamBodyKind:
+            typeof error.upstreamBodyKind === "string"
+              ? (error.upstreamBodyKind as UpstreamBodyDetails["bodyKind"])
+              : null,
+          responsePreview: typeof error.responsePreview === "string" ? error.responsePreview : null,
+          selectedFlavor: "selectedFlavor" in error ? (error.selectedFlavor as SelectedFlavorDebug | null) : null,
+          normalizedHumorFlavorId:
+            typeof error.normalizedHumorFlavorId === "string" ? error.normalizedHumorFlavorId : null,
+          normalizedStepCount: typeof error.normalizedStepCount === "number" ? error.normalizedStepCount : null,
+          orderedStepIds: Array.isArray(error.orderedStepIds) ? (error.orderedStepIds as number[]) : null,
+          totalDurationMs: typeof error.totalDurationMs === "number" ? error.totalDurationMs : null,
+          flavorComplexity:
+            "flavorComplexity" in error ? (error.flavorComplexity as FlavorComplexitySummary | null) : null,
           message: typeof error.message === "string" ? error.message : "Unknown stage error",
         });
       }

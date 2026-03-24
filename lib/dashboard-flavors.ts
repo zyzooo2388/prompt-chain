@@ -1,15 +1,10 @@
 import { createAppRouterServerSupabaseClient } from "@/lib/supabase/server";
-import type { HumorFlavorRow, HumorFlavorStepRow } from "@/lib/supabase/types";
-import type { DashboardFlavorData, HumorFlavor } from "@/lib/flavor-types";
+import type { HumorFlavorStepRow } from "@/lib/supabase/types";
+import type { DashboardFlavorData, HumorFlavor, HumorFlavorRecord } from "@/lib/flavor-types";
 import type { FlavorValidationReferenceCatalog } from "@/lib/flavor-health";
 import { parseStepTemplateKey, stripStepTemplateMarker } from "@/lib/flavor-step-templates";
 
-type FlavorDropdownRow = {
-  id: number | string;
-  slug: string | null;
-  description: string | null;
-  created_datetime_utc: string | null;
-};
+type FlavorQueryRow = Record<string, unknown>;
 
 type StepRow = Pick<
   HumorFlavorStepRow,
@@ -35,13 +30,27 @@ type SupabaseQueryError = {
 
 type LlmModelReferenceRow = {
   id: number;
+  name: string | null;
   llm_provider_id: number | null;
   provider_model_id: string | null;
+};
+
+type LlmInputTypeReferenceRow = {
+  id: number;
+  slug: string | null;
+  description: string | null;
 };
 
 type LlmOutputTypeReferenceRow = {
   id: number;
   slug: string | null;
+  description: string | null;
+};
+
+type HumorFlavorStepTypeReferenceRow = {
+  id: number;
+  slug: string | null;
+  description: string | null;
 };
 
 type IdRow = {
@@ -116,7 +125,25 @@ function toFlavorSteps(stepRows: StepRow[]) {
     });
 }
 
-function toDashboardFlavors(flavorRows: HumorFlavorRow[], stepRows: StepRow[]): HumorFlavor[] {
+function buildFlavorDisplayName(flavor: HumorFlavorRecord) {
+  const name = asString(flavor.name);
+  const title = asString(flavor.title);
+  const slugLabel = humanizeSlug(flavor.slug);
+  const description = asString(flavor.description);
+
+  return name ?? title ?? slugLabel ?? description ?? `Flavor ${flavor.id}`;
+}
+
+function buildFlavorTone(flavor: HumorFlavorRecord) {
+  const tone = asString(flavor.tone);
+  const title = asString(flavor.title);
+  const slugLabel = humanizeSlug(flavor.slug);
+  const description = asString(flavor.description);
+
+  return tone ?? title ?? slugLabel ?? description ?? `Flavor ${flavor.id}`;
+}
+
+function toDashboardFlavors(flavorRows: HumorFlavorRecord[], stepRows: StepRow[]): HumorFlavor[] {
   const stepRowsByFlavorId = new Map<string, StepRow[]>();
 
   for (const step of stepRows) {
@@ -127,34 +154,45 @@ function toDashboardFlavors(flavorRows: HumorFlavorRow[], stepRows: StepRow[]): 
   }
 
   return flavorRows.map((flavor) => {
-    const slugLabel = humanizeSlug(flavor.slug);
     const description = flavor.description?.trim() ?? "";
-    const name = slugLabel ?? (description || `Flavor ${flavor.id}`);
-    const tone = description || slugLabel || `Flavor ${flavor.id}`;
+    const name = buildFlavorDisplayName(flavor);
+    const tone = buildFlavorTone(flavor);
     const flavorId = String(flavor.id);
+    const slugLabel = humanizeSlug(flavor.slug);
 
     return {
       id: flavorId,
+      rowId: flavor.id,
+      sourceRow: flavor,
       name,
       slug: flavor.slug,
       tone,
       description,
-      displayLabel: slugLabel ?? (description || flavorId),
+      displayLabel: name || slugLabel || description || flavorId,
       steps: toFlavorSteps(stepRowsByFlavorId.get(flavorId) ?? []),
     };
   });
 }
 
-function toFlavorRow(rawRow: FlavorDropdownRow): HumorFlavorRow {
+function toFlavorRow(rawRow: FlavorQueryRow): HumorFlavorRecord | null {
+  const idValue = rawRow.id;
+  const numericId = typeof idValue === "number" ? idValue : Number(idValue);
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return null;
+  }
+
   const slug = asString(rawRow.slug);
   const description = asString(rawRow.description) ?? "";
   const createdDatetimeUtc = asString(rawRow.created_datetime_utc) ?? "";
 
   return {
-    id: Number(rawRow.id),
+    id: numericId,
     created_datetime_utc: createdDatetimeUtc,
     description,
     slug,
+    name: asString(rawRow.name),
+    tone: asString(rawRow.tone),
+    title: asString(rawRow.title),
     created_by_user_id: null,
     modified_by_user_id: null,
     modified_datetime_utc: null,
@@ -245,29 +283,32 @@ async function queryFlavorValidationReferenceCatalog(
 ): Promise<FlavorValidationReferenceCatalog> {
   const [llmModelsResult, llmInputTypesResult, llmOutputTypesResult, stepTypesResult, llmProvidersResult] =
     await Promise.all([
-      supabase.schema("public").from("llm_models").select("id, llm_provider_id, provider_model_id"),
-      supabase.schema("public").from("llm_input_types").select("id"),
-      supabase.schema("public").from("llm_output_types").select("id, slug"),
-      supabase.schema("public").from("humor_flavor_step_types").select("id"),
+      supabase
+        .schema("public")
+        .from("llm_models")
+        .select("id, name, llm_provider_id, provider_model_id"),
+      supabase.schema("public").from("llm_input_types").select("id, slug, description"),
+      supabase.schema("public").from("llm_output_types").select("id, slug, description"),
+      supabase.schema("public").from("humor_flavor_step_types").select("id, slug, description"),
       supabase.schema("public").from("llm_providers").select("id"),
     ]);
 
   if (llmModelsResult.error) {
     logSupabaseError("[dashboard-flavors] failed querying public.llm_models", llmModelsResult.error, {
       table: "public.llm_models",
-      selectedColumns: ["id", "llm_provider_id", "provider_model_id"],
+      selectedColumns: ["id", "name", "llm_provider_id", "provider_model_id"],
     });
   }
   if (llmInputTypesResult.error) {
     logSupabaseError("[dashboard-flavors] failed querying public.llm_input_types", llmInputTypesResult.error, {
       table: "public.llm_input_types",
-      selectedColumns: ["id"],
+      selectedColumns: ["id", "slug", "description"],
     });
   }
   if (llmOutputTypesResult.error) {
     logSupabaseError("[dashboard-flavors] failed querying public.llm_output_types", llmOutputTypesResult.error, {
       table: "public.llm_output_types",
-      selectedColumns: ["id", "slug"],
+      selectedColumns: ["id", "slug", "description"],
     });
   }
   if (stepTypesResult.error) {
@@ -276,7 +317,7 @@ async function queryFlavorValidationReferenceCatalog(
       stepTypesResult.error,
       {
         table: "public.humor_flavor_step_types",
-        selectedColumns: ["id"],
+        selectedColumns: ["id", "slug", "description"],
       },
     );
   }
@@ -290,13 +331,25 @@ async function queryFlavorValidationReferenceCatalog(
   return {
     llmModels: ((llmModelsResult.data ?? []) as LlmModelReferenceRow[]).map((row) => ({
       id: row.id,
+      name: row.name,
       llmProviderId: row.llm_provider_id,
       providerModelId: row.provider_model_id,
+    })),
+    llmInputTypes: ((llmInputTypesResult.data ?? []) as LlmInputTypeReferenceRow[]).map((row) => ({
+      id: row.id,
+      slug: row.slug,
+      description: row.description,
     })),
     llmInputTypeIds: ((llmInputTypesResult.data ?? []) as IdRow[]).map((row) => row.id),
     llmOutputTypes: ((llmOutputTypesResult.data ?? []) as LlmOutputTypeReferenceRow[]).map((row) => ({
       id: row.id,
       slug: row.slug,
+      description: row.description,
+    })),
+    humorFlavorStepTypes: ((stepTypesResult.data ?? []) as HumorFlavorStepTypeReferenceRow[]).map((row) => ({
+      id: row.id,
+      slug: row.slug,
+      description: row.description,
     })),
     humorFlavorStepTypeIds: ((stepTypesResult.data ?? []) as IdRow[]).map((row) => row.id),
     llmProviderIds: ((llmProvidersResult.data ?? []) as IdRow[]).map((row) => row.id),
@@ -306,7 +359,7 @@ async function queryFlavorValidationReferenceCatalog(
 export async function getDashboardFlavors(): Promise<DashboardFlavorData> {
   try {
     const supabase = await createAppRouterServerSupabaseClient();
-    const flavorSelectUsed = "id, description, slug, created_datetime_utc";
+    const flavorSelectUsed = "*";
     const flavorOrderClause = "created_datetime_utc asc";
     const flavorFiltersUsed = "in-memory blocked/test token filtering on slug and description";
 
@@ -319,7 +372,7 @@ export async function getDashboardFlavors(): Promise<DashboardFlavorData> {
     if (flavorResult.error || !flavorResult.data) {
       logSupabaseError("[dashboard-flavors] failed querying public.humor_flavors", flavorResult.error, {
         table: "public.humor_flavors",
-        selectedColumns: ["id", "description", "slug", "created_datetime_utc"],
+        selectedColumns: ["*"],
         orderClause: flavorOrderClause,
         filtersUsed: flavorFiltersUsed,
         queryShape: {
@@ -333,8 +386,10 @@ export async function getDashboardFlavors(): Promise<DashboardFlavorData> {
         source: "supabase_error",
         referenceCatalog: {
           llmModels: [],
+          llmInputTypes: [],
           llmInputTypeIds: [],
           llmOutputTypes: [],
+          humorFlavorStepTypes: [],
           humorFlavorStepTypeIds: [],
           llmProviderIds: [],
         },
@@ -343,7 +398,7 @@ export async function getDashboardFlavors(): Promise<DashboardFlavorData> {
 
     console.info("[dashboard-flavors] queried public.humor_flavors", {
       table: "public.humor_flavors",
-      selectedColumns: ["id", "description", "slug", "created_datetime_utc"],
+      selectedColumns: ["*"],
       orderClause: flavorOrderClause,
       filtersUsed: flavorFiltersUsed,
       rowCount: flavorResult.data.length,
@@ -358,7 +413,9 @@ export async function getDashboardFlavors(): Promise<DashboardFlavorData> {
       foreignKeyField: "humor_flavor_id",
     });
 
-    const normalizedFlavorRows = flavorResult.data.map(toFlavorRow);
+    const normalizedFlavorRows = (flavorResult.data as FlavorQueryRow[])
+      .map(toFlavorRow)
+      .filter((row): row is HumorFlavorRecord => Boolean(row));
     const flavors = toDashboardFlavors(normalizedFlavorRows, stepRows);
     console.info("[dashboard-flavors] loaded flavors", flavors.length);
 
@@ -374,8 +431,10 @@ export async function getDashboardFlavors(): Promise<DashboardFlavorData> {
       source: "supabase_error",
       referenceCatalog: {
         llmModels: [],
+        llmInputTypes: [],
         llmInputTypeIds: [],
         llmOutputTypes: [],
+        humorFlavorStepTypes: [],
         humorFlavorStepTypeIds: [],
         llmProviderIds: [],
       },

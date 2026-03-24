@@ -23,19 +23,35 @@ export const FINAL_CAPTION_OUTPUT_TYPE_ID = CAPTION_ARRAY_OUTPUT_TYPE_ID;
 
 export type LlmModelReference = {
   id: number;
+  name: string | null;
   llmProviderId: number | null;
   providerModelId: string | null;
+};
+
+export type LlmInputTypeReference = {
+  id: number;
+  slug: string | null;
+  description: string | null;
 };
 
 export type LlmOutputTypeReference = {
   id: number;
   slug: string | null;
+  description: string | null;
+};
+
+export type HumorFlavorStepTypeReference = {
+  id: number;
+  slug: string | null;
+  description: string | null;
 };
 
 export type FlavorValidationReferenceCatalog = {
   llmModels: LlmModelReference[];
+  llmInputTypes: LlmInputTypeReference[];
   llmInputTypeIds: number[];
   llmOutputTypes: LlmOutputTypeReference[];
+  humorFlavorStepTypes: HumorFlavorStepTypeReference[];
   humorFlavorStepTypeIds: number[];
   llmProviderIds: number[];
 };

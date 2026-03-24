@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import type { StepLookupOption } from "@/components/dashboard/step-form";
 import { FlavorDetails } from "@/components/dashboard/flavor-details";
 import { FlavorList } from "@/components/dashboard/flavor-list";
 import { Panel } from "@/components/dashboard/panel";
@@ -21,10 +22,17 @@ import type {
   FlavorStepDraftErrors,
   FlavorValidationReferenceCatalog,
   HumorFlavor,
+  HumorFlavorRecord,
   HumorFlavorDraft,
 } from "@/lib/flavor-types";
 import { supabase } from "@/lib/supabase/client";
-import type { HumorFlavorStepInsert, HumorFlavorStepRow, HumorFlavorStepUpdate } from "@/lib/supabase/types";
+import type {
+  HumorFlavorInsert,
+  HumorFlavorStepInsert,
+  HumorFlavorStepRow,
+  HumorFlavorStepUpdate,
+  HumorFlavorUpdate,
+} from "@/lib/supabase/types";
 
 type FlavorDashboardProps = {
   initialFlavors: HumorFlavor[];
@@ -80,11 +88,38 @@ type StepPayload = {
   description: string;
 };
 
+type SelectedFlavorBinding = {
+  id: number;
+  name: string;
+  slug: string | null;
+  summary: string;
+};
+
+type StepActionFeedback = {
+  tone: "info" | "success" | "error";
+  message: string;
+};
+
 const stepPanelSelect =
   "id, humor_flavor_id, order_by, humor_flavor_step_type_id, llm_input_type_id, llm_output_type_id, llm_model_id, llm_temperature, llm_system_prompt, llm_user_prompt, description";
 
-function createId(prefix: string) {
-  return `${prefix}-${Math.random().toString(36).slice(2, 8)}`;
+function humanizeSlug(slug: string | null) {
+  if (!slug) {
+    return null;
+  }
+
+  return slug
+    .trim()
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function buildLookupLabel(...parts: Array<string | null | undefined>) {
+  return parts
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part))
+    .join(" - ");
 }
 
 const stepFieldLabels: Record<keyof FlavorStepDraft, string> = {
@@ -243,6 +278,200 @@ function createNewStepDraft(flavor: HumorFlavor): FlavorStepDraft {
   };
 }
 
+function resolveNumericFlavorId(flavor: HumorFlavor | null, selectedFlavorId: string | null = null): number | null {
+  if (flavor && Number.isInteger(flavor.sourceRow.id) && flavor.sourceRow.id > 0) {
+    return flavor.sourceRow.id;
+  }
+
+  if (flavor && Number.isInteger(flavor.rowId) && (flavor.rowId ?? 0) > 0) {
+    return flavor.rowId;
+  }
+
+  const candidates = [flavor?.id ?? null, selectedFlavorId];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") {
+      continue;
+    }
+    const parsedId = Number(candidate.trim());
+    if (Number.isInteger(parsedId) && parsedId > 0) {
+      return parsedId;
+    }
+  }
+
+  return null;
+}
+
+function resolveSelectedFlavorBinding(
+  flavor: HumorFlavor | null,
+  numericFlavorId: number | null,
+): SelectedFlavorBinding | null {
+  if (!flavor || !numericFlavorId) {
+    return null;
+  }
+
+  const displayName = flavor.name.trim() || flavor.slug?.trim() || `Flavor ${numericFlavorId}`;
+
+  return {
+    id: numericFlavorId,
+    name: displayName,
+    slug: flavor.slug,
+    summary: `Humor Flavor: ${displayName} (#${numericFlavorId})`,
+  };
+}
+
+function mapFlavorRecordToDashboardFlavor(
+  flavorRow: HumorFlavorRecord,
+  existingSteps: HumorFlavor["steps"] = [],
+): HumorFlavor {
+  const description = flavorRow.description?.trim() ?? "";
+  const slugLabel = humanizeSlug(flavorRow.slug);
+  const displayName =
+    flavorRow.name?.trim() ||
+    flavorRow.title?.trim() ||
+    slugLabel ||
+    description ||
+    `Flavor ${flavorRow.id}`;
+  const tone =
+    flavorRow.tone?.trim() ||
+    flavorRow.title?.trim() ||
+    slugLabel ||
+    description ||
+    `Flavor ${flavorRow.id}`;
+
+  return {
+    id: String(flavorRow.id),
+    rowId: flavorRow.id,
+    sourceRow: flavorRow,
+    name: displayName,
+    slug: flavorRow.slug,
+    tone,
+    description,
+    displayLabel: displayName,
+    steps: existingSteps,
+  };
+}
+
+function toFlavorRecord(rawValue: Record<string, unknown>): HumorFlavorRecord | null {
+  const idValue = rawValue.id;
+  const numericId = typeof idValue === "number" ? idValue : Number(idValue);
+
+  if (!Number.isInteger(numericId) || numericId <= 0) {
+    return null;
+  }
+
+  return {
+    id: numericId,
+    slug: typeof rawValue.slug === "string" ? rawValue.slug : null,
+    description: typeof rawValue.description === "string" ? rawValue.description : "",
+    created_datetime_utc:
+      typeof rawValue.created_datetime_utc === "string" ? rawValue.created_datetime_utc : "",
+    created_by_user_id:
+      typeof rawValue.created_by_user_id === "string" ? rawValue.created_by_user_id : null,
+    modified_by_user_id:
+      typeof rawValue.modified_by_user_id === "string" ? rawValue.modified_by_user_id : null,
+    modified_datetime_utc:
+      typeof rawValue.modified_datetime_utc === "string" ? rawValue.modified_datetime_utc : null,
+    name: typeof rawValue.name === "string" ? rawValue.name : null,
+    tone: typeof rawValue.tone === "string" ? rawValue.tone : null,
+    title: typeof rawValue.title === "string" ? rawValue.title : null,
+  };
+}
+
+function createFlavorSlug(value: HumorFlavorDraft, currentSlug: string | null = null) {
+  const baseSource = value.name.trim() || value.tone.trim() || currentSlug || "humor-flavor";
+  const baseSlug = baseSource
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-|-$/g, "");
+
+  return (baseSlug || "humor-flavor").slice(0, 80);
+}
+
+async function insertFlavorWithFallback(
+  payload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const fullInsertResult = await supabase
+    .schema("public")
+    .from("humor_flavors")
+    .insert(payload as HumorFlavorInsert)
+    .select("*")
+    .single();
+
+  if (!fullInsertResult.error && fullInsertResult.data) {
+    return fullInsertResult.data as Record<string, unknown>;
+  }
+
+  const fallbackPayload = {
+    description: typeof payload.description === "string" ? payload.description : "",
+    slug: typeof payload.slug === "string" ? payload.slug : null,
+    created_by_user_id: payload.created_by_user_id,
+    modified_by_user_id: payload.modified_by_user_id,
+    created_datetime_utc: payload.created_datetime_utc,
+    modified_datetime_utc: payload.modified_datetime_utc,
+  } satisfies Record<string, unknown>;
+
+  const fallbackInsertResult = await supabase
+    .schema("public")
+    .from("humor_flavors")
+    .insert(fallbackPayload as HumorFlavorInsert)
+    .select("*")
+    .single();
+
+  if (fallbackInsertResult.error || !fallbackInsertResult.data) {
+    throw new Error(
+      fallbackInsertResult.error?.message ??
+        fullInsertResult.error?.message ??
+        "Failed creating humor flavor.",
+    );
+  }
+
+  return fallbackInsertResult.data as Record<string, unknown>;
+}
+
+async function updateFlavorWithFallback(
+  numericFlavorId: number,
+  payload: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const fullUpdateResult = await supabase
+    .schema("public")
+    .from("humor_flavors")
+    .update(payload as HumorFlavorUpdate)
+    .eq("id", numericFlavorId)
+    .select("*")
+    .single();
+
+  if (!fullUpdateResult.error && fullUpdateResult.data) {
+    return fullUpdateResult.data as Record<string, unknown>;
+  }
+
+  const fallbackPayload = {
+    description: typeof payload.description === "string" ? payload.description : "",
+    slug: typeof payload.slug === "string" ? payload.slug : null,
+    modified_by_user_id: payload.modified_by_user_id,
+    modified_datetime_utc: payload.modified_datetime_utc,
+  } satisfies Record<string, unknown>;
+
+  const fallbackUpdateResult = await supabase
+    .schema("public")
+    .from("humor_flavors")
+    .update(fallbackPayload as HumorFlavorUpdate)
+    .eq("id", numericFlavorId)
+    .select("*")
+    .single();
+
+  if (fallbackUpdateResult.error || !fallbackUpdateResult.data) {
+    throw new Error(
+      fallbackUpdateResult.error?.message ??
+        fullUpdateResult.error?.message ??
+        "Failed updating humor flavor.",
+    );
+  }
+
+  return fallbackUpdateResult.data as Record<string, unknown>;
+}
+
 export function FlavorDashboard({
   initialFlavors,
   initialSelectedFlavorId,
@@ -251,20 +480,43 @@ export function FlavorDashboard({
 }: FlavorDashboardProps) {
   const supabaseImportReady = Boolean(supabase);
   const [flavors, setFlavors] = useState(initialFlavors);
-  const [selectedFlavorId, setSelectedFlavorId] = useState<string | null>(
-    initialSelectedFlavorId ?? initialFlavors[0]?.id ?? null,
+  const [selectedFlavor, setSelectedFlavor] = useState<HumorFlavor | null>(
+    initialFlavors.find((flavor) => flavor.id === (initialSelectedFlavorId ?? initialFlavors[0]?.id ?? "")) ??
+      initialFlavors[0] ??
+      null,
   );
   const [flavorEditorMode, setFlavorEditorMode] = useState<"idle" | "create" | "edit">("idle");
   const [stepEditorMode, setStepEditorMode] = useState<"idle" | "create" | "edit">("idle");
   const [editingStepId, setEditingStepId] = useState<string | null>(null);
   const [stepFormErrors, setStepFormErrors] = useState<FlavorStepDraftErrors>({});
   const [isSavingStep, setIsSavingStep] = useState(false);
+  const [isLoadingSteps, setIsLoadingSteps] = useState(false);
   const [flavorActionError, setFlavorActionError] = useState<string | null>(null);
   const [isDuplicatingFlavor, setIsDuplicatingFlavor] = useState(false);
+  const [stepActionFeedback, setStepActionFeedback] = useState<StepActionFeedback | null>(null);
 
-  const selectedFlavor =
-    flavors.find((flavor) => flavor.id === selectedFlavorId) ?? flavors[0] ?? null;
+  const selectedFlavorId = selectedFlavor?.id ?? null;
+  const selectedFlavorNumericId = resolveNumericFlavorId(selectedFlavor, selectedFlavorId);
   const flavorAuditById = getFlavorAuditById(flavors, referenceCatalog);
+  const stepTypeOptions: StepLookupOption[] = referenceCatalog.humorFlavorStepTypes.map((stepType) => ({
+    value: String(stepType.id),
+    label: `${buildLookupLabel(humanizeSlug(stepType.slug), stepType.description) || `Step Type`} (#${stepType.id})`,
+    description: stepType.description,
+  }));
+  const llmModelOptions: StepLookupOption[] = referenceCatalog.llmModels.map((model) => ({
+    value: String(model.id),
+    label: `${buildLookupLabel(model.name, model.providerModelId) || "Model"} (#${model.id})`,
+  }));
+  const llmInputTypeOptions: StepLookupOption[] = referenceCatalog.llmInputTypes.map((inputType) => ({
+    value: String(inputType.id),
+    label: `${buildLookupLabel(inputType.description, humanizeSlug(inputType.slug)) || "Input Type"} (#${inputType.id})`,
+    description: inputType.description,
+  }));
+  const llmOutputTypeOptions: StepLookupOption[] = referenceCatalog.llmOutputTypes.map((outputType) => ({
+    value: String(outputType.id),
+    label: `${buildLookupLabel(outputType.description, humanizeSlug(outputType.slug)) || "Output Type"} (#${outputType.id})`,
+    description: outputType.description,
+  }));
 
   async function getCurrentUserId() {
     const { data, error } = await supabase.auth.getUser();
@@ -275,55 +527,164 @@ export function FlavorDashboard({
     return data.user.id;
   }
 
-  async function loadFlavorSteps(flavorId: string) {
-    const numericFlavorId = Number(flavorId);
-    if (!Number.isFinite(numericFlavorId)) {
-      return;
-    }
+  async function loadFlavorSteps(flavorId: string, numericFlavorIdFromBinding?: number | null) {
+    setIsLoadingSteps(true);
 
-    const { data, error } = await supabase
-      .schema("public")
-      .from("humor_flavor_steps")
-      .select(stepPanelSelect)
-      .eq("humor_flavor_id", numericFlavorId)
-      .order("order_by", { ascending: true });
+    try {
+      const numericFlavorId =
+        typeof numericFlavorIdFromBinding === "number" && Number.isInteger(numericFlavorIdFromBinding)
+          ? numericFlavorIdFromBinding
+          : Number(flavorId);
+      if (!Number.isFinite(numericFlavorId) || numericFlavorId <= 0) {
+        console.warn("[flavor-dashboard] could not resolve selected flavor id for step query", {
+          selectedFlavorId: flavorId,
+          numericFlavorIdFromBinding,
+        });
+        setStepActionFeedback({
+          tone: "error",
+          message: "Could not resolve the selected humor flavor id.",
+        });
+        return;
+      }
 
-    if (error) {
-      console.error("[flavor-dashboard] failed querying selected flavor steps", {
+      console.info("[flavor-dashboard] step query payload/filter", {
+        table: "public.humor_flavor_steps",
+        select: stepPanelSelect,
+        filter: { humor_flavor_id: numericFlavorId },
+        orderBy: "order_by asc",
+      });
+      const { data, error } = await supabase
+        .schema("public")
+        .from("humor_flavor_steps")
+        .select(stepPanelSelect)
+        .eq("humor_flavor_id", numericFlavorId)
+        .order("order_by", { ascending: true });
+
+      if (error) {
+        console.error("[flavor-dashboard] failed querying selected flavor steps", {
+          table: "public.humor_flavor_steps",
+          selectedFlavorId: flavorId,
+          select: stepPanelSelect,
+          foreignKeyField: "humor_flavor_id",
+          orderClause: "order_by asc",
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code,
+        });
+        setStepActionFeedback({
+          tone: "error",
+          message: "Failed loading humor flavor steps.",
+        });
+        return;
+      }
+
+      const rows = (data ?? []) as StepPanelRow[];
+      console.info("[flavor-dashboard] queried selected flavor step count", {
         table: "public.humor_flavor_steps",
         selectedFlavorId: flavorId,
-        select: stepPanelSelect,
-        foreignKeyField: "humor_flavor_id",
-        orderClause: "order_by asc",
-        message: error.message,
-        details: error.details,
-        hint: error.hint,
-        code: error.code,
+        numericFlavorId,
+        queriedStepCount: rows.length,
       });
-      return;
+      const mappedSteps = rows.map(mapStepRowToFlavorStep);
+
+      setFlavors((current) =>
+        current.map((flavor) => (flavor.id === flavorId ? { ...flavor, steps: mappedSteps } : flavor)),
+      );
+    } finally {
+      setIsLoadingSteps(false);
+    }
+  }
+
+  async function saveFlavorToSupabase(value: HumorFlavorDraft) {
+    const userId = await getCurrentUserId();
+    const nowIso = new Date().toISOString();
+    const slug = createFlavorSlug(value, selectedFlavor?.slug ?? null);
+    const fullPayload = {
+      name: value.name.trim(),
+      title: value.name.trim(),
+      tone: value.tone.trim(),
+      description: value.description.trim(),
+      slug,
+      created_by_user_id: userId,
+      modified_by_user_id: userId,
+      created_datetime_utc: nowIso,
+      modified_datetime_utc: nowIso,
+    } satisfies Record<string, unknown>;
+
+    if (flavorEditorMode === "create") {
+      const data = await insertFlavorWithFallback(fullPayload);
+      const flavorRow = toFlavorRecord(data);
+      if (!flavorRow) {
+        throw new Error("Created humor flavor row is invalid.");
+      }
+
+      return mapFlavorRecordToDashboardFlavor(flavorRow);
     }
 
-    const rows = (data ?? []) as StepPanelRow[];
-    const mappedSteps = rows.map(mapStepRowToFlavorStep);
+    if (!selectedFlavorNumericId) {
+      throw new Error("Could not determine the selected humor flavor id.");
+    }
 
-    setFlavors((current) =>
-      current.map((flavor) => (flavor.id === flavorId ? { ...flavor, steps: mappedSteps } : flavor)),
-    );
+    const updatePayload = {
+      name: value.name.trim(),
+      title: value.name.trim(),
+      tone: value.tone.trim(),
+      description: value.description.trim(),
+      slug,
+      modified_by_user_id: userId,
+      modified_datetime_utc: nowIso,
+    } satisfies Record<string, unknown>;
+
+    const data = await updateFlavorWithFallback(selectedFlavorNumericId, updatePayload);
+    const flavorRow = toFlavorRecord(data);
+    if (!flavorRow) {
+      throw new Error("Updated humor flavor row is invalid.");
+    }
+
+    return mapFlavorRecordToDashboardFlavor(flavorRow, selectedFlavor?.steps ?? []);
   }
 
   useEffect(() => {
     if (!selectedFlavorId) {
+      setIsLoadingSteps(false);
       return;
     }
 
     const selectedFlavorIdValue = selectedFlavorId;
+    const numericSelectedFlavorId = selectedFlavorNumericId;
 
     async function loadSelectedFlavorSteps() {
-      await loadFlavorSteps(selectedFlavorIdValue);
+      await loadFlavorSteps(selectedFlavorIdValue, numericSelectedFlavorId);
     }
 
     void loadSelectedFlavorSteps();
-  }, [selectedFlavorId]);
+  }, [selectedFlavorId, selectedFlavorNumericId]);
+
+  useEffect(() => {
+    if (!selectedFlavor) {
+      return;
+    }
+
+    const selectedFlavorMatch = flavors.find((flavor) =>
+      selectedFlavor.rowId
+        ? flavor.rowId === selectedFlavor.rowId
+        : flavor.id === selectedFlavor.id,
+    );
+
+    if (selectedFlavorMatch && selectedFlavorMatch !== selectedFlavor) {
+      setSelectedFlavor(selectedFlavorMatch);
+    }
+
+    if (!selectedFlavorMatch && flavors.length === 0) {
+      setSelectedFlavor(null);
+    }
+  }, [flavors, selectedFlavor]);
+
+  useEffect(() => {
+    console.info("[flavor-dashboard] raw selected flavor row from query", selectedFlavor?.sourceRow ?? null);
+    console.info("[flavor-dashboard] selected flavor state object", selectedFlavor);
+  }, [selectedFlavor]);
 
   const flavorDraft: HumorFlavorDraft =
     flavorEditorMode === "edit" && selectedFlavor
@@ -344,25 +705,36 @@ export function FlavorDashboard({
         ? createNewStepDraft(selectedFlavor)
         : emptyStepDraft;
 
-  const stepsFlavor = flavorEditorMode === "create" ? null : selectedFlavor;
+  const selectedStepFlavorBinding = resolveSelectedFlavorBinding(selectedFlavor, selectedFlavorNumericId);
 
-  function resetStepEditor() {
+  function resetStepEditor(clearFeedback = false) {
     setStepEditorMode("idle");
     setEditingStepId(null);
     setStepFormErrors({});
+    if (clearFeedback) {
+      setStepActionFeedback(null);
+    }
   }
 
   function handleSelectFlavor(id: string) {
+    const clickedFlavor = flavors.find((flavor) => flavor.id === id) ?? null;
+    console.info("[flavor-dashboard] selected flavor from flavor card click", {
+      rawSelectedFlavorRow: clickedFlavor?.sourceRow ?? null,
+      selectedFlavor: clickedFlavor,
+    });
+
     setFlavorActionError(null);
-    setSelectedFlavorId(id);
+    setStepActionFeedback(null);
+    setSelectedFlavor(clickedFlavor);
     setFlavorEditorMode("idle");
-    resetStepEditor();
+    resetStepEditor(true);
   }
 
   function handleCreateFlavor() {
     setFlavorActionError(null);
+    setStepActionFeedback(null);
     setFlavorEditorMode("create");
-    resetStepEditor();
+    resetStepEditor(true);
   }
 
   function handleEditFlavor() {
@@ -371,58 +743,61 @@ export function FlavorDashboard({
     }
 
     setFlavorActionError(null);
+    setStepActionFeedback(null);
     setFlavorEditorMode("edit");
-    resetStepEditor();
+    resetStepEditor(true);
   }
 
-  function handleDeleteFlavor() {
+  async function handleDeleteFlavor() {
     if (!selectedFlavor) {
       return;
     }
 
     setFlavorActionError(null);
+    if (selectedFlavorNumericId) {
+      const { error } = await supabase
+        .schema("public")
+        .from("humor_flavors")
+        .delete()
+        .eq("id", selectedFlavorNumericId);
+
+      if (error) {
+        setFlavorActionError(error.message);
+        return;
+      }
+    }
+
     setFlavors((current) => {
       const next = current.filter((flavor) => flavor.id !== selectedFlavor.id);
-      setSelectedFlavorId(next[0]?.id ?? null);
+      setSelectedFlavor(next[0] ?? null);
       return next;
     });
     setFlavorEditorMode("idle");
-    resetStepEditor();
+    resetStepEditor(true);
   }
 
-  function handleSaveFlavor(value: HumorFlavorDraft) {
+  async function handleSaveFlavor(value: HumorFlavorDraft) {
     setFlavorActionError(null);
 
-    if (flavorEditorMode === "create") {
-      const newFlavor: HumorFlavor = {
-        id: createId("flavor"),
-        slug: null,
-        ...value,
-        displayLabel: value.name || value.description,
-        steps: [],
-      };
+    try {
+      const persistedFlavor = await saveFlavorToSupabase(value);
 
-      setFlavors((current) => [...current, newFlavor]);
-      setSelectedFlavorId(newFlavor.id);
+      setFlavors((current) => {
+        if (flavorEditorMode === "create") {
+          return [...current, persistedFlavor];
+        }
+
+        return current.map((flavor) =>
+          flavor.id === persistedFlavor.id ? { ...persistedFlavor, steps: flavor.steps } : flavor,
+        );
+      });
+      setSelectedFlavor(persistedFlavor);
       setFlavorEditorMode("idle");
-      return;
-    }
-
-    if (flavorEditorMode === "edit" && selectedFlavor) {
-      setFlavors((current) =>
-        current.map((flavor) =>
-          flavor.id === selectedFlavor.id
-            ? {
-                ...flavor,
-                ...value,
-                displayLabel: value.name || flavor.slug || value.description || flavor.id,
-              }
-            : flavor,
-        ),
+    } catch (error) {
+      setFlavorActionError(
+        error instanceof Error ? error.message : "Failed saving humor flavor.",
       );
     }
-
-    setFlavorEditorMode("idle");
   }
 
   function handleCancelFlavor() {
@@ -441,7 +816,7 @@ export function FlavorDashboard({
       return;
     }
 
-    const numericSourceFlavorId = Number(selectedFlavor.id);
+    const numericSourceFlavorId = resolveNumericFlavorId(selectedFlavor);
     if (!Number.isFinite(numericSourceFlavorId)) {
       setFlavorActionError("Selected flavor id is invalid.");
       return;
@@ -561,6 +936,19 @@ export function FlavorDashboard({
       const cloneFlavorId = String(insertFlavorData.id);
       const cloneFlavor: HumorFlavor = {
         id: cloneFlavorId,
+        rowId: numericCloneFlavorId,
+        sourceRow: {
+          id: numericCloneFlavorId,
+          slug: insertFlavorData.slug ?? cloneSlug,
+          description: selectedFlavor.description,
+          created_datetime_utc: nowIso,
+          created_by_user_id: userId,
+          modified_by_user_id: userId,
+          modified_datetime_utc: nowIso,
+          name: `${selectedFlavor.name} Copy`,
+          title: `${selectedFlavor.name} Copy`,
+          tone: selectedFlavor.tone,
+        },
         name: `${selectedFlavor.name} Copy`,
         slug: insertFlavorData.slug ?? cloneSlug,
         tone: selectedFlavor.tone,
@@ -570,7 +958,7 @@ export function FlavorDashboard({
       };
 
       setFlavors((current) => [...current, cloneFlavor]);
-      setSelectedFlavorId(cloneFlavorId);
+      setSelectedFlavor(cloneFlavor);
       setFlavorEditorMode("edit");
       resetStepEditor();
       await loadFlavorSteps(cloneFlavorId);
@@ -584,16 +972,35 @@ export function FlavorDashboard({
   }
 
   function handleCreateStep() {
+    console.info("[flavor-dashboard] opening create step form", {
+      selectedFlavor,
+      selectedFlavorNumericId,
+    });
+
     if (!selectedFlavor) {
+      setStepActionFeedback({
+        tone: "error",
+        message: "Select a humor flavor first",
+      });
       return;
     }
 
+    setStepActionFeedback(null);
     setStepEditorMode("create");
     setEditingStepId(null);
     setStepFormErrors({});
   }
 
   function handleEditStep(stepId: string) {
+    if (!selectedFlavor) {
+      setStepActionFeedback({
+        tone: "error",
+        message: "Select a humor flavor first",
+      });
+      return;
+    }
+
+    setStepActionFeedback(null);
     setStepEditorMode("edit");
     setEditingStepId(stepId);
     setStepFormErrors({});
@@ -601,12 +1008,20 @@ export function FlavorDashboard({
 
   async function deleteStep(stepId: string) {
     if (!selectedFlavor) {
+      setStepActionFeedback({
+        tone: "error",
+        message: "Select a humor flavor first",
+      });
       return;
     }
 
     const numericStepId = Number(stepId);
-    const numericFlavorId = Number(selectedFlavor.id);
+    const numericFlavorId = resolveNumericFlavorId(selectedFlavor);
     if (!Number.isFinite(numericStepId) || !Number.isFinite(numericFlavorId)) {
+      setStepActionFeedback({
+        tone: "error",
+        message: "The selected step id or flavor id is invalid.",
+      });
       return;
     }
 
@@ -627,22 +1042,46 @@ export function FlavorDashboard({
         hint: error.hint,
         code: error.code,
       });
+      setStepActionFeedback({
+        tone: "error",
+        message: `Failed deleting step: ${error.message}`,
+      });
       return;
     }
 
+    console.info("[flavor-dashboard] deleted step id", {
+      deletedStepId: stepId,
+      flavorId: selectedFlavor.id,
+      foreignKeyField: "humor_flavor_id",
+    });
+
     await loadFlavorSteps(selectedFlavor.id);
+    setStepActionFeedback({
+      tone: "success",
+      message: "Humor flavor step deleted.",
+    });
 
     if (editingStepId === stepId) {
-      resetStepEditor();
+      resetStepEditor(false);
     }
   }
 
   function handleDeleteStep(stepId: string) {
+    if (typeof window !== "undefined") {
+      const shouldDelete = window.confirm("Delete this humor flavor step?");
+      if (!shouldDelete) {
+        return;
+      }
+    }
     void deleteStep(stepId);
   }
 
   async function moveStep(stepId: string, direction: "up" | "down") {
     if (!selectedFlavor) {
+      setStepActionFeedback({
+        tone: "error",
+        message: "Select a humor flavor first",
+      });
       return;
     }
 
@@ -708,10 +1147,18 @@ export function FlavorDashboard({
         currentError,
         targetError,
       });
+      setStepActionFeedback({
+        tone: "error",
+        message: "Failed reordering humor flavor steps.",
+      });
       return;
     }
 
     await loadFlavorSteps(selectedFlavor.id);
+    setStepActionFeedback({
+      tone: "success",
+      message: "Humor flavor step order updated.",
+    });
   }
 
   function handleMoveStep(stepId: string, direction: "up" | "down") {
@@ -720,6 +1167,10 @@ export function FlavorDashboard({
 
   async function handleSaveStep(value: FlavorStepDraft) {
     if (!selectedFlavor) {
+      setStepActionFeedback({
+        tone: "error",
+        message: "Select a humor flavor first",
+      });
       return;
     }
 
@@ -729,10 +1180,19 @@ export function FlavorDashboard({
       return;
     }
 
-    const numericFlavorId = Number(selectedFlavor.id);
-    if (!Number.isFinite(numericFlavorId)) {
+    console.info("[flavor-dashboard] selected flavor id before submit", {
+      selectedFlavorId: selectedStepFlavorBinding?.id ?? null,
+      selectedFlavor,
+    });
+
+    const numericFlavorId = selectedStepFlavorBinding?.id;
+    if (typeof numericFlavorId !== "number" || !Number.isInteger(numericFlavorId) || numericFlavorId <= 0) {
       setStepFormErrors({
-        form: "Selected humor flavor id is invalid.",
+        form: "Could not determine the selected humor flavor. Please re-select a flavor and try again.",
+      });
+      setStepActionFeedback({
+        tone: "error",
+        message: "Could not determine the selected humor flavor id.",
       });
       return;
     }
@@ -761,6 +1221,11 @@ export function FlavorDashboard({
           created_datetime_utc: nowIso,
           modified_datetime_utc: nowIso,
         };
+
+        console.info("[flavor-dashboard] insert payload for public.humor_flavor_steps", {
+          table: "public.humor_flavor_steps",
+          insertPayload,
+        });
 
         const { error } = await supabase
           .schema("public")
@@ -799,6 +1264,11 @@ export function FlavorDashboard({
           modified_datetime_utc: nowIso,
         };
 
+        console.info("[flavor-dashboard] update payload for public.humor_flavor_steps", {
+          table: "public.humor_flavor_steps",
+          updatePayload,
+        });
+
         const { error } = await supabase
           .schema("public")
           .from("humor_flavor_steps")
@@ -812,10 +1282,21 @@ export function FlavorDashboard({
       }
 
       await loadFlavorSteps(selectedFlavor.id);
-      resetStepEditor();
+      setStepActionFeedback({
+        tone: "success",
+        message:
+          stepEditorMode === "create"
+            ? "Humor flavor step created."
+            : "Humor flavor step updated.",
+      });
+      resetStepEditor(false);
     } catch (error) {
       setStepFormErrors({
         form: error instanceof Error ? error.message : "Failed saving humor flavor step.",
+      });
+      setStepActionFeedback({
+        tone: "error",
+        message: error instanceof Error ? error.message : "Failed saving humor flavor step.",
       });
     } finally {
       setIsSavingStep(false);
@@ -862,26 +1343,35 @@ export function FlavorDashboard({
                 onCreateFlavor={handleCreateFlavor}
                 onEditFlavor={handleEditFlavor}
                 onDuplicateFlavor={handleDuplicateFlavor}
-                onDeleteFlavor={handleDeleteFlavor}
+                onDeleteFlavor={() => void handleDeleteFlavor()}
                 onCancel={handleCancelFlavor}
-                onSave={handleSaveFlavor}
+                onSave={(value) => void handleSaveFlavor(value)}
               />
             </Panel>
 
             <Panel title="Steps" subtitle="How this flavor is applied">
-              <StepsPanel
-                flavor={stepsFlavor}
-                editorMode={stepEditorMode}
+            <StepsPanel
+              flavor={selectedFlavor}
+              selectedFlavorNumericId={selectedFlavorNumericId}
+              selectedFlavorBinding={selectedStepFlavorBinding}
+              editorMode={stepEditorMode}
                 editingStepId={editingStepId}
                 draft={stepDraft}
                 errors={stepFormErrors}
+                actionMessage={stepActionFeedback?.message ?? null}
+                actionTone={stepActionFeedback?.tone ?? "info"}
                 isSavingStep={isSavingStep}
+                isLoadingSteps={isLoadingSteps}
+                stepTypeOptions={stepTypeOptions}
+                llmModelOptions={llmModelOptions}
+                llmInputTypeOptions={llmInputTypeOptions}
+                llmOutputTypeOptions={llmOutputTypeOptions}
                 onCreateStep={handleCreateStep}
                 onEditStep={handleEditStep}
                 onDeleteStep={handleDeleteStep}
                 onMoveStep={handleMoveStep}
                 onSaveStep={handleSaveStep}
-                onCancelStep={resetStepEditor}
+                onCancelStep={() => resetStepEditor(false)}
               />
             </Panel>
 

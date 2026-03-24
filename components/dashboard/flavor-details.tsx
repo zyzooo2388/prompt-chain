@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+
 import { FlavorForm } from "@/components/dashboard/flavor-form";
 import type { FlavorAudit } from "@/lib/flavor-audit";
 import type { HumorFlavor, HumorFlavorDraft } from "@/lib/flavor-types";
@@ -31,6 +33,26 @@ export function FlavorDetails({
   onCancel,
   onSave,
 }: FlavorDetailsProps) {
+  useEffect(() => {
+    const numericFlavorId =
+      flavor && Number.isInteger(flavor.sourceRow.id) && flavor.sourceRow.id > 0
+        ? flavor.sourceRow.id
+        : flavor
+          ? Number(flavor.id)
+          : null;
+
+    console.info("[flavor-details] selected flavor id received", {
+      selectedFlavorId: flavor?.id ?? null,
+      selectedFlavorDbRowId: flavor?.sourceRow.id ?? null,
+      selectedFlavorNumericId:
+        typeof numericFlavorId === "number" && Number.isInteger(numericFlavorId) && numericFlavorId > 0
+          ? numericFlavorId
+          : null,
+      rawSelectedFlavorRow: flavor?.sourceRow ?? null,
+      selectedFlavor: flavor,
+    });
+  }, [flavor]);
+
   if (mode !== "idle") {
     return (
       <div className="space-y-4">
