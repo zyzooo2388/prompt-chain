@@ -159,6 +159,7 @@ function toDashboardFlavors(flavorRows: HumorFlavorRecord[], stepRows: StepRow[]
     const tone = buildFlavorTone(flavor);
     const flavorId = String(flavor.id);
     const slugLabel = humanizeSlug(flavor.slug);
+    const slugIdentifier = flavor.slug?.trim() || null;
 
     return {
       id: flavorId,
@@ -168,7 +169,7 @@ function toDashboardFlavors(flavorRows: HumorFlavorRecord[], stepRows: StepRow[]
       slug: flavor.slug,
       tone,
       description,
-      displayLabel: name || slugLabel || description || flavorId,
+      displayLabel: slugIdentifier || name || slugLabel || description || flavorId,
       steps: toFlavorSteps(stepRowsByFlavorId.get(flavorId) ?? []),
     };
   });

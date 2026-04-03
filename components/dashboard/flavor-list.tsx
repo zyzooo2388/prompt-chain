@@ -55,7 +55,7 @@ export function FlavorList({
                   }`}
                 />
                 <p className="font-medium text-gray-900 transition-colors duration-200 dark:text-white">
-                  {flavor.name}
+                  {flavor.displayLabel}
                 </p>
                 <p className="mt-2">
                   <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide ${statusClassName}`}>

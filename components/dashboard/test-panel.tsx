@@ -584,7 +584,7 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
         supabaseAccessToken: accessToken,
         selectedFlavor: {
           id: normalizedHumorFlavorId,
-          name: selectedFlavor.name,
+          name: selectedFlavor.slug?.trim() || selectedFlavor.name,
           tone: selectedFlavor.tone,
         },
         specificationVersion: "v1",
@@ -743,12 +743,13 @@ export function TestPanel({ flavors, initialFlavorId, referenceCatalog }: TestPa
               const availability = flavorAvailabilityById.get(flavor.id);
               const audit = flavorAuditById.get(flavor.id);
               const status = audit?.status ?? audit?.health?.status ?? null;
+              const selectorLabel = flavor.slug?.trim() || flavor.displayLabel;
               const unavailableLabel = status
-                ? `${flavor.displayLabel} (${status})`
-                : `${flavor.displayLabel} (Unavailable)`;
+                ? `${selectorLabel} (${status})`
+                : `${selectorLabel} (Unavailable)`;
               return (
                 <option key={flavor.id} value={flavor.id} disabled={!availability?.selectable}>
-                  {availability?.selectable ? flavor.displayLabel : unavailableLabel}
+                  {availability?.selectable ? selectorLabel : unavailableLabel}
                 </option>
               );
             })}
