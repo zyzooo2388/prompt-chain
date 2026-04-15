@@ -9,7 +9,6 @@ import { Panel } from "@/components/dashboard/panel";
 import { StepsPanel } from "@/components/dashboard/steps-panel";
 import { TestPanel } from "@/components/dashboard/test-panel";
 import { getFlavorAuditById } from "@/lib/flavor-audit";
-import { getFlavorHealth } from "@/lib/flavor-health";
 import {
   parseStepTemplateKey,
   STEP_TEMPLATE_BY_KEY,
@@ -100,8 +99,29 @@ type StepActionFeedback = {
   message: string;
 };
 
+type FlavorActionFeedback = {
+  tone: "info" | "success" | "error";
+  message: string;
+};
+
 const stepPanelSelect =
   "id, humor_flavor_id, order_by, humor_flavor_step_type_id, llm_input_type_id, llm_output_type_id, llm_model_id, llm_temperature, llm_system_prompt, llm_user_prompt, description";
+
+const duplicateFlavorExcludedFields = new Set([
+  "id",
+  "created_datetime_utc",
+  "modified_datetime_utc",
+  "validation_cache",
+  "validation_cache_json",
+  "validation_cache_updated_at",
+  "last_validated_at",
+]);
+
+const duplicateStepExcludedFields = new Set([
+  "id",
+  "created_datetime_utc",
+  "modified_datetime_utc",
+]);
 
 function humanizeSlug(slug: string | null) {
   if (!slug) {
@@ -120,6 +140,104 @@ function buildLookupLabel(...parts: Array<string | null | undefined>) {
     .map((part) => part?.trim())
     .filter((part): part is string => Boolean(part))
     .join(" - ");
+}
+
+function slugifyFlavorName(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function shouldExcludeDuplicateFlavorField(key: string) {
+  if (duplicateFlavorExcludedFields.has(key)) {
+    return true;
+  }
+
+  return /validation.*cache|cache.*validation/i.test(key);
+}
+
+function stripCopySuffix(value: string) {
+  return value.replace(/-copy(?:-\d+)?$/i, "");
+}
+
+function buildDuplicateFlavorBaseName(sourceFlavorRow: Record<string, unknown>, selectedFlavor: HumorFlavor | null) {
+  const candidates = [
+    typeof sourceFlavorRow.slug === "string" ? sourceFlavorRow.slug : null,
+    selectedFlavor?.slug ?? null,
+    typeof sourceFlavorRow.description === "string" ? sourceFlavorRow.description : null,
+    selectedFlavor?.description ?? null,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate !== "string") {
+      continue;
+    }
+
+    const normalized = slugifyFlavorName(candidate);
+    if (normalized) {
+      return stripCopySuffix(normalized) || "flavor";
+    }
+  }
+
+  const sourceFlavorId = typeof sourceFlavorRow.id === "number" ? sourceFlavorRow.id : Number(sourceFlavorRow.id);
+  if (Number.isInteger(sourceFlavorId) && sourceFlavorId > 0) {
+    return `flavor-${sourceFlavorId}`;
+  }
+
+  return "flavor";
+}
+
+function collectExistingFlavorSlugs(flavorRows: Record<string, unknown>[]) {
+  const existingSlugs = new Set<string>();
+
+  for (const row of flavorRows) {
+    if (typeof row.slug !== "string") {
+      continue;
+    }
+
+    const normalized = slugifyFlavorName(row.slug);
+    if (normalized) {
+      existingSlugs.add(normalized);
+    }
+  }
+
+  return existingSlugs;
+}
+
+function buildUniqueDuplicateFlavorSlug(
+  sourceFlavorRow: Record<string, unknown>,
+  flavorRows: Record<string, unknown>[],
+  selectedFlavor: HumorFlavor | null,
+) {
+  const existingSlugs = collectExistingFlavorSlugs(flavorRows);
+  const baseName = buildDuplicateFlavorBaseName(sourceFlavorRow, selectedFlavor);
+  const initialCandidate = `${baseName}-copy`;
+
+  if (!existingSlugs.has(initialCandidate)) {
+    return initialCandidate;
+  }
+
+  let suffix = 2;
+  while (existingSlugs.has(`${baseName}-copy-${suffix}`)) {
+    suffix += 1;
+  }
+
+  return `${baseName}-copy-${suffix}`;
+}
+
+function omitFields(row: Record<string, unknown>, shouldOmit: (key: string) => boolean) {
+  const nextRow: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(row)) {
+    if (!shouldOmit(key)) {
+      nextRow[key] = value;
+    }
+  }
+
+  return nextRow;
 }
 
 const stepFieldLabels: Record<keyof FlavorStepDraft, string> = {
@@ -310,7 +428,7 @@ function resolveSelectedFlavorBinding(
     return null;
   }
 
-  const displayName = flavor.name.trim() || flavor.slug?.trim() || `Flavor ${numericFlavorId}`;
+  const displayName = flavor.slug?.trim() || flavor.name.trim() || `Flavor ${numericFlavorId}`;
 
   return {
     id: numericFlavorId,
@@ -327,18 +445,8 @@ function mapFlavorRecordToDashboardFlavor(
   const description = flavorRow.description?.trim() ?? "";
   const slugLabel = humanizeSlug(flavorRow.slug);
   const slugIdentifier = flavorRow.slug?.trim() || null;
-  const displayName =
-    flavorRow.name?.trim() ||
-    flavorRow.title?.trim() ||
-    slugLabel ||
-    description ||
-    `Flavor ${flavorRow.id}`;
-  const tone =
-    flavorRow.tone?.trim() ||
-    flavorRow.title?.trim() ||
-    slugLabel ||
-    description ||
-    `Flavor ${flavorRow.id}`;
+  const displayName = slugLabel || slugIdentifier || description || `Flavor ${flavorRow.id}`;
+  const tone = slugLabel || slugIdentifier || description || `Flavor ${flavorRow.id}`;
 
   return {
     id: String(flavorRow.id),
@@ -373,9 +481,6 @@ function toFlavorRecord(rawValue: Record<string, unknown>): HumorFlavorRecord | 
       typeof rawValue.modified_by_user_id === "string" ? rawValue.modified_by_user_id : null,
     modified_datetime_utc:
       typeof rawValue.modified_datetime_utc === "string" ? rawValue.modified_datetime_utc : null,
-    name: typeof rawValue.name === "string" ? rawValue.name : null,
-    tone: typeof rawValue.tone === "string" ? rawValue.tone : null,
-    title: typeof rawValue.title === "string" ? rawValue.title : null,
   };
 }
 
@@ -492,7 +597,7 @@ export function FlavorDashboard({
   const [stepFormErrors, setStepFormErrors] = useState<FlavorStepDraftErrors>({});
   const [isSavingStep, setIsSavingStep] = useState(false);
   const [isLoadingSteps, setIsLoadingSteps] = useState(false);
-  const [flavorActionError, setFlavorActionError] = useState<string | null>(null);
+  const [flavorActionFeedback, setFlavorActionFeedback] = useState<FlavorActionFeedback | null>(null);
   const [isDuplicatingFlavor, setIsDuplicatingFlavor] = useState(false);
   const [stepActionFeedback, setStepActionFeedback] = useState<StepActionFeedback | null>(null);
 
@@ -800,7 +905,7 @@ export function FlavorDashboard({
       selectedFlavor: clickedFlavor,
     });
 
-    setFlavorActionError(null);
+    setFlavorActionFeedback(null);
     setStepActionFeedback(null);
     setSelectedFlavor(clickedFlavor);
     setFlavorEditorMode("idle");
@@ -808,7 +913,7 @@ export function FlavorDashboard({
   }
 
   function handleCreateFlavor() {
-    setFlavorActionError(null);
+    setFlavorActionFeedback(null);
     setStepActionFeedback(null);
     setFlavorEditorMode("create");
     resetStepEditor(true);
@@ -819,7 +924,7 @@ export function FlavorDashboard({
       return;
     }
 
-    setFlavorActionError(null);
+    setFlavorActionFeedback(null);
     setStepActionFeedback(null);
     setFlavorEditorMode("edit");
     resetStepEditor(true);
@@ -830,7 +935,7 @@ export function FlavorDashboard({
       return;
     }
 
-    setFlavorActionError(null);
+    setFlavorActionFeedback(null);
     if (selectedFlavorNumericId) {
       const { error } = await supabase
         .schema("public")
@@ -839,7 +944,10 @@ export function FlavorDashboard({
         .eq("id", selectedFlavorNumericId);
 
       if (error) {
-        setFlavorActionError(error.message);
+        setFlavorActionFeedback({
+          tone: "error",
+          message: error.message,
+        });
         return;
       }
     }
@@ -847,7 +955,10 @@ export function FlavorDashboard({
     try {
       await refreshFlavorsFromSupabase(null);
     } catch (error) {
-      setFlavorActionError(error instanceof Error ? error.message : "Failed refreshing humor flavors.");
+      setFlavorActionFeedback({
+        tone: "error",
+        message: error instanceof Error ? error.message : "Failed refreshing humor flavors.",
+      });
       return;
     }
     setFlavorEditorMode("idle");
@@ -855,160 +966,200 @@ export function FlavorDashboard({
   }
 
   async function handleSaveFlavor(value: HumorFlavorDraft) {
-    setFlavorActionError(null);
+    setFlavorActionFeedback(null);
 
     try {
       const persistedFlavor = await saveFlavorToSupabase(value);
       await refreshFlavorsFromSupabase(persistedFlavor.id);
       setFlavorEditorMode("idle");
     } catch (error) {
-      setFlavorActionError(
-        error instanceof Error ? error.message : "Failed saving humor flavor.",
-      );
+      setFlavorActionFeedback({
+        tone: "error",
+        message: error instanceof Error ? error.message : "Failed saving humor flavor.",
+      });
     }
   }
 
   function handleCancelFlavor() {
-    setFlavorActionError(null);
+    setFlavorActionFeedback(null);
     setFlavorEditorMode("idle");
   }
 
-  async function handleDuplicateFlavor() {
-    if (!selectedFlavor) {
-      return;
+  async function duplicateHumorFlavor(flavorId: number) {
+    const userId = await getCurrentUserId();
+
+    const sourceFlavorResult = await supabase
+      .schema("public")
+      .from("humor_flavors")
+      .select("*")
+      .eq("id", flavorId)
+      .single();
+
+    if (sourceFlavorResult.error) {
+      throw new Error(sourceFlavorResult.error.message);
     }
 
-    const selectedHealth = getFlavorHealth(selectedFlavor.id, flavors, referenceCatalog);
-    if (!selectedHealth?.valid) {
-      setFlavorActionError("Only working flavors can be duplicated.");
-      return;
+    if (!sourceFlavorResult.data) {
+      throw new Error("Selected humor flavor could not be found.");
     }
 
-    const numericSourceFlavorId = resolveNumericFlavorId(selectedFlavor);
-    if (!Number.isFinite(numericSourceFlavorId)) {
-      setFlavorActionError("Selected flavor id is invalid.");
-      return;
+    const sourceFlavorRow = sourceFlavorResult.data as Record<string, unknown>;
+    const existingFlavorsResult = await supabase
+      .schema("public")
+      .from("humor_flavors")
+      .select("*");
+
+    if (existingFlavorsResult.error) {
+      throw new Error(existingFlavorsResult.error.message);
     }
 
-    setIsDuplicatingFlavor(true);
-    setFlavorActionError(null);
+    const existingFlavorRows = (existingFlavorsResult.data ?? []) as Record<string, unknown>[];
+    const duplicateFlavorBaseSlug = buildUniqueDuplicateFlavorSlug(
+      sourceFlavorRow,
+      existingFlavorRows,
+      selectedFlavor,
+    ).slice(0, 80);
+    let duplicateFlavorSlug = duplicateFlavorBaseSlug;
+    let duplicateSlugSuffix = 2;
 
-    try {
-      const userId = await getCurrentUserId();
-      const nowIso = new Date().toISOString();
-      const slugBase = (selectedFlavor.slug?.trim().toLowerCase() || `flavor-${selectedFlavor.id}`)
-        .replace(/[^a-z0-9-]+/g, "-")
-        .replace(/-{2,}/g, "-")
-        .replace(/^-|-$/g, "");
-      const suffix = Date.now().toString().slice(-6);
-      const cloneSlug = `${slugBase || "flavor"}-clone-${suffix}`.slice(0, 80);
-
-      const fullFlavorPayload: Record<string, unknown> = {
-        name: `${selectedFlavor.name} Copy`,
-        tone: selectedFlavor.tone,
-        description: selectedFlavor.description,
-        slug: cloneSlug,
-        created_datetime_utc: nowIso,
-        modified_datetime_utc: nowIso,
-        created_by_user_id: userId,
-        modified_by_user_id: userId,
-      };
-
-      let insertFlavorData: { id: number | string; slug: string | null } | null = null;
-      let insertFlavorErrorMessage = "";
-
-      const fullInsertResult = await supabase
+    for (;;) {
+      const slugExistsResult = await supabase
         .schema("public")
         .from("humor_flavors")
-        .insert(fullFlavorPayload as never)
-        .select("id, slug")
+        .select("id")
+        .eq("slug", duplicateFlavorSlug)
         .limit(1);
 
-      if (!fullInsertResult.error && fullInsertResult.data?.[0]) {
-        insertFlavorData = fullInsertResult.data[0] as { id: number | string; slug: string | null };
-      } else {
-        insertFlavorErrorMessage = fullInsertResult.error?.message ?? "Unknown insert error.";
-        const fallbackFlavorPayload: Record<string, unknown> = {
-          description: selectedFlavor.description,
-          slug: cloneSlug,
-          created_datetime_utc: nowIso,
-          modified_datetime_utc: nowIso,
-          created_by_user_id: userId,
-          modified_by_user_id: userId,
-        };
-
-        const fallbackInsertResult = await supabase
-          .schema("public")
-          .from("humor_flavors")
-          .insert(fallbackFlavorPayload as never)
-          .select("id, slug")
-          .limit(1);
-
-        if (fallbackInsertResult.error || !fallbackInsertResult.data?.[0]) {
-          throw new Error(
-            fallbackInsertResult.error?.message ??
-              `Could not create clone flavor row. First error: ${insertFlavorErrorMessage}`,
-          );
-        }
-
-        insertFlavorData = fallbackInsertResult.data[0] as { id: number | string; slug: string | null };
+      if (slugExistsResult.error) {
+        throw new Error(slugExistsResult.error.message);
       }
 
-      const numericCloneFlavorId = Number(insertFlavorData.id);
-      if (!Number.isFinite(numericCloneFlavorId)) {
-        throw new Error("Cloned flavor id is invalid.");
+      if ((slugExistsResult.data ?? []).length === 0) {
+        break;
       }
 
+      duplicateFlavorSlug = `${stripCopySuffix(duplicateFlavorBaseSlug)}-copy-${duplicateSlugSuffix}`.slice(0, 80);
+      duplicateSlugSuffix += 1;
+    }
+
+    const duplicateFlavorPayload = omitFields(sourceFlavorRow, shouldExcludeDuplicateFlavorField);
+
+    duplicateFlavorPayload.slug = duplicateFlavorSlug;
+    duplicateFlavorPayload.is_pinned = false;
+    duplicateFlavorPayload.created_by_user_id = userId;
+    duplicateFlavorPayload.modified_by_user_id = userId;
+
+    const insertFlavorResult = await supabase
+      .schema("public")
+      .from("humor_flavors")
+      .insert(duplicateFlavorPayload as HumorFlavorInsert)
+      .select("*")
+      .single();
+
+    if (insertFlavorResult.error || !insertFlavorResult.data) {
+      throw new Error(insertFlavorResult.error?.message ?? "Failed creating duplicated humor flavor.");
+    }
+
+    const insertedFlavorRow = insertFlavorResult.data as Record<string, unknown>;
+    const insertedFlavorId = typeof insertedFlavorRow.id === "number" ? insertedFlavorRow.id : Number(insertedFlavorRow.id);
+    if (!Number.isInteger(insertedFlavorId) || insertedFlavorId <= 0) {
+      throw new Error("Duplicated humor flavor id is invalid.");
+    }
+
+    try {
       const sourceStepsResult = await supabase
         .schema("public")
         .from("humor_flavor_steps")
-        .select(stepPanelSelect)
-        .eq("humor_flavor_id", numericSourceFlavorId)
+        .select("*")
+        .eq("humor_flavor_id", flavorId)
         .order("order_by", { ascending: true });
 
       if (sourceStepsResult.error) {
         throw new Error(sourceStepsResult.error.message);
       }
 
-      const sourceStepRows = (sourceStepsResult.data ?? []) as StepPanelRow[];
-      if (sourceStepRows.length === 0) {
-        throw new Error("Cannot clone a flavor with zero steps.");
+      const sourceStepRows = (sourceStepsResult.data ?? []) as Record<string, unknown>[];
+      if (sourceStepRows.length > 0) {
+        const duplicateStepRows = sourceStepRows.map((stepRow) => {
+          const duplicateStepPayload = omitFields(
+            stepRow,
+            (key) => duplicateStepExcludedFields.has(key),
+          );
+          duplicateStepPayload.humor_flavor_id = insertedFlavorId;
+          duplicateStepPayload.created_by_user_id = userId;
+          duplicateStepPayload.modified_by_user_id = userId;
+          return duplicateStepPayload;
+        });
+
+        const duplicateStepsResult = await supabase
+          .schema("public")
+          .from("humor_flavor_steps")
+          .insert(duplicateStepRows as HumorFlavorStepInsert[]);
+
+        if (duplicateStepsResult.error) {
+          throw new Error(duplicateStepsResult.error.message);
+        }
       }
 
-      const cloneStepRows: HumorFlavorStepInsert[] = sourceStepRows.map((step) => ({
-        humor_flavor_id: numericCloneFlavorId,
-        order_by: step.order_by,
-        humor_flavor_step_type_id: step.humor_flavor_step_type_id,
-        llm_input_type_id: step.llm_input_type_id,
-        llm_output_type_id: step.llm_output_type_id,
-        llm_model_id: step.llm_model_id,
-        llm_temperature: step.llm_temperature,
-        llm_system_prompt: step.llm_system_prompt,
-        llm_user_prompt: step.llm_user_prompt,
-        description: step.description,
-        created_by_user_id: userId,
-        modified_by_user_id: userId,
-        created_datetime_utc: nowIso,
-        modified_datetime_utc: nowIso,
-      }));
-
-      const cloneStepsResult = await supabase
+      return {
+        duplicatedFlavorId: String(insertedFlavorId),
+        duplicatedFlavorName: duplicateFlavorSlug,
+        duplicatedStepCount: sourceStepRows.length,
+      };
+    } catch (error) {
+      await supabase
         .schema("public")
         .from("humor_flavor_steps")
-        .insert(cloneStepRows);
+        .delete()
+        .eq("humor_flavor_id", insertedFlavorId);
+      await supabase
+        .schema("public")
+        .from("humor_flavors")
+        .delete()
+        .eq("id", insertedFlavorId);
 
-      if (cloneStepsResult.error) {
-        throw new Error(cloneStepsResult.error.message);
-      }
+      throw error;
+    }
+  }
 
-      const cloneFlavorId = String(insertFlavorData.id);
-      await refreshFlavorsFromSupabase(cloneFlavorId);
-      setFlavorEditorMode("edit");
+  async function handleDuplicateFlavor() {
+    if (!selectedFlavor) {
+      setFlavorActionFeedback({
+        tone: "error",
+        message: "Select a humor flavor first.",
+      });
+      return;
+    }
+
+    const numericSourceFlavorId = resolveNumericFlavorId(selectedFlavor);
+    if (typeof numericSourceFlavorId !== "number" || !Number.isFinite(numericSourceFlavorId)) {
+      setFlavorActionFeedback({
+        tone: "error",
+        message: "Selected flavor id is invalid.",
+      });
+      return;
+    }
+
+    setIsDuplicatingFlavor(true);
+    setFlavorActionFeedback(null);
+
+    try {
+      const result = await duplicateHumorFlavor(numericSourceFlavorId);
+      await refreshFlavorsFromSupabase(result.duplicatedFlavorId);
+      setFlavorEditorMode("idle");
       resetStepEditor();
+      setFlavorActionFeedback({
+        tone: "success",
+        message:
+          result.duplicatedStepCount > 0
+            ? `Duplicated humor flavor as "${result.duplicatedFlavorName}".`
+            : `Duplicated humor flavor as "${result.duplicatedFlavorName}" with no steps to copy.`,
+      });
     } catch (error) {
-      setFlavorActionError(
-        error instanceof Error ? error.message : "Failed to duplicate humor flavor.",
-      );
+      setFlavorActionFeedback({
+        tone: "error",
+        message: error instanceof Error ? error.message : "Failed to duplicate humor flavor.",
+      });
     } finally {
       setIsDuplicatingFlavor(false);
     }
@@ -1381,7 +1532,8 @@ export function FlavorDashboard({
                 audit={selectedFlavor ? flavorAuditById.get(selectedFlavor.id) ?? null : null}
                 mode={flavorEditorMode}
                 draft={flavorDraft}
-                actionError={flavorActionError}
+                actionMessage={flavorActionFeedback?.message ?? null}
+                actionTone={flavorActionFeedback?.tone ?? "info"}
                 isDuplicating={isDuplicatingFlavor}
                 onCreateFlavor={handleCreateFlavor}
                 onEditFlavor={handleEditFlavor}

@@ -9,7 +9,8 @@ type FlavorDetailsProps = {
   audit: FlavorAudit | null;
   mode: "idle" | "create" | "edit";
   draft: HumorFlavorDraft;
-  actionError: string | null;
+  actionMessage: string | null;
+  actionTone: "info" | "success" | "error";
   isDuplicating: boolean;
   onCreateFlavor: () => void;
   onEditFlavor: () => void;
@@ -24,7 +25,8 @@ export function FlavorDetails({
   audit,
   mode,
   draft,
-  actionError,
+  actionMessage,
+  actionTone,
   isDuplicating,
   onCreateFlavor,
   onEditFlavor,
@@ -33,6 +35,11 @@ export function FlavorDetails({
   onCancel,
   onSave,
 }: FlavorDetailsProps) {
+  const flavorIdentifier =
+    flavor?.slug?.trim() ||
+    flavor?.description?.trim() ||
+    (flavor ? `Flavor ${flavor.id}` : "Flavor");
+
   useEffect(() => {
     const numericFlavorId =
       flavor && Number.isInteger(flavor.sourceRow.id) && flavor.sourceRow.id > 0
@@ -62,7 +69,7 @@ export function FlavorDetails({
               {mode === "create" ? "New Flavor" : "Edit Flavor"}
             </p>
             <p className="mt-1 text-xl font-semibold text-zinc-900 dark:text-zinc-100">
-              {mode === "create" ? "Create Humor Flavor" : `Edit ${flavor?.name ?? "Flavor"}`}
+              {mode === "create" ? "Create Humor Flavor" : `Edit ${flavorIdentifier}`}
             </p>
           </div>
         </div>
@@ -110,7 +117,7 @@ export function FlavorDetails({
           disabled={isDuplicating}
           className="rounded-lg border border-zinc-300 px-3 py-2 text-sm font-medium text-zinc-700 transition hover:border-zinc-500 hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:border-zinc-500 dark:hover:text-zinc-100"
         >
-          {isDuplicating ? "Duplicating..." : "Duplicate Working Flavor"}
+          {isDuplicating ? "Duplicating..." : "Duplicate Humor Flavor"}
         </button>
         <button
           type="button"
@@ -121,8 +128,18 @@ export function FlavorDetails({
         </button>
       </div>
 
-      {actionError ? (
-        <p className="text-sm text-red-700 dark:text-red-300">{actionError}</p>
+      {actionMessage ? (
+        <p
+          className={`text-sm ${
+            actionTone === "error"
+              ? "text-red-700 dark:text-red-300"
+              : actionTone === "success"
+                ? "text-emerald-700 dark:text-emerald-300"
+                : "text-zinc-600 dark:text-zinc-400"
+          }`}
+        >
+          {actionMessage}
+        </p>
       ) : null}
 
       {audit?.health ? (
@@ -150,13 +167,8 @@ export function FlavorDetails({
       ) : null}
 
       <div>
-        <p className="text-sm uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Flavor Name</p>
-        <p className="mt-1 text-xl font-semibold text-zinc-900 dark:text-zinc-100">{flavor.name}</p>
-      </div>
-
-      <div>
-        <p className="text-sm uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Tone</p>
-        <p className="mt-1 text-zinc-700 dark:text-zinc-300">{flavor.tone}</p>
+        <p className="text-sm uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Flavor Slug</p>
+        <p className="mt-1 text-xl font-semibold text-zinc-900 dark:text-zinc-100">{flavorIdentifier}</p>
       </div>
 
       <div>
