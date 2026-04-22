@@ -26,10 +26,10 @@ export default async function DashboardLayout({ children }: DashboardLayoutProps
   }
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-zinc-100 to-zinc-200 px-4 py-8 text-zinc-950 transition-colors duration-200 dark:from-zinc-950 dark:to-zinc-900 dark:text-zinc-50">
-      <div className="mx-auto w-full max-w-7xl">
+    <main className="h-screen min-h-screen overflow-hidden bg-gradient-to-b from-zinc-100 to-zinc-200 px-4 py-4 text-zinc-950 transition-colors duration-200 dark:from-zinc-950 dark:to-zinc-900 dark:text-zinc-50 lg:py-6">
+      <div className="mx-auto flex h-full w-full max-w-7xl min-h-0 flex-col">
         <PageHeader userEmail={access.user.email} />
-        {children}
+        <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
       </div>
     </main>
   );

@@ -6,9 +6,10 @@ type PanelProps = {
   children: ReactNode;
   className?: string;
   titleClassName?: string;
+  contentClassName?: string;
 };
 
-export function Panel({ title, subtitle, children, className, titleClassName }: PanelProps) {
+export function Panel({ title, subtitle, children, className, titleClassName, contentClassName }: PanelProps) {
   const panelClassName = [
     "rounded-2xl border border-gray-200 bg-white p-6 shadow-sm transition-colors duration-200 dark:border-gray-700 dark:bg-gray-800",
     className,
@@ -21,6 +22,7 @@ export function Panel({ title, subtitle, children, className, titleClassName }: 
   ]
     .filter(Boolean)
     .join(" ");
+  const resolvedContentClassName = [contentClassName].filter(Boolean).join(" ");
 
   return (
     <section className={panelClassName}>
@@ -32,7 +34,7 @@ export function Panel({ title, subtitle, children, className, titleClassName }: 
           </p>
         ) : null}
       </header>
-      {children}
+      <div className={resolvedContentClassName}>{children}</div>
     </section>
   );
 }

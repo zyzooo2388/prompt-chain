@@ -1498,10 +1498,15 @@ export function FlavorDashboard({
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-6 text-gray-900 transition-colors duration-200 dark:bg-gray-900 dark:text-gray-100 lg:p-8">
-      <div className="flex flex-col gap-6 lg:flex-row">
-        <aside className="w-full shrink-0 lg:w-[320px]">
-          <Panel title="Flavor List" subtitle="Choose a humor flavor">
+    <div className="h-full min-h-0 overflow-hidden bg-gray-50 p-4 text-gray-900 transition-colors duration-200 dark:bg-gray-900 dark:text-gray-100 lg:p-6">
+      <div className="flex h-full min-h-0 flex-col gap-6 lg:flex-row">
+        <aside className="w-full shrink-0 lg:h-full lg:w-[360px]">
+          <Panel
+            title="Flavor List"
+            subtitle="Choose a humor flavor"
+            className="flex h-full min-h-0 flex-col"
+            contentClassName="min-h-0 flex-1"
+          >
             <FlavorList
               flavors={flavors}
               selectedFlavorId={selectedFlavor?.id ?? ""}
@@ -1512,73 +1517,78 @@ export function FlavorDashboard({
           </Panel>
         </aside>
 
-        <main className="min-h-[600px] flex-1 space-y-6 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm transition-colors duration-200 dark:border-gray-700 dark:bg-gray-800">
-          <div className="flex justify-end">
-            <p className="text-xs text-gray-500 transition-colors duration-200 dark:text-gray-400">
-              Supabase client import check: {supabaseImportReady ? "ready" : "not ready"}
-            </p>
-          </div>
+        <main className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm transition-colors duration-200 dark:border-gray-700 dark:bg-gray-800">
+          <div className="flex h-full min-h-0 flex-col">
+            <div className="flex items-center justify-between px-6 pb-4 pt-6">
+              <div aria-hidden="true" />
+              <p className="rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-xs text-slate-300">
+                Supabase client import check: {supabaseImportReady ? "ready" : "not ready"}
+              </p>
+            </div>
 
-          <div className="grid gap-6 xl:grid-cols-2">
-            <Panel
-              title="Flavor Details"
-              titleClassName="text-xl font-semibold text-gray-900 transition-colors duration-200 dark:text-white"
-              subtitle={
-                flavorEditorMode === "create" ? "Add a new humor flavor" : "Selected flavor info"
-              }
-            >
-              <FlavorDetails
-                flavor={selectedFlavor}
-                audit={selectedFlavor ? flavorAuditById.get(selectedFlavor.id) ?? null : null}
-                mode={flavorEditorMode}
-                draft={flavorDraft}
-                actionMessage={flavorActionFeedback?.message ?? null}
-                actionTone={flavorActionFeedback?.tone ?? "info"}
-                isDuplicating={isDuplicatingFlavor}
-                onCreateFlavor={handleCreateFlavor}
-                onEditFlavor={handleEditFlavor}
-                onDuplicateFlavor={handleDuplicateFlavor}
-                onDeleteFlavor={() => void handleDeleteFlavor()}
-                onCancel={handleCancelFlavor}
-                onSave={(value) => void handleSaveFlavor(value)}
-              />
-            </Panel>
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain scroll-smooth px-6 pb-6">
+              <div className="grid gap-6 xl:grid-cols-2">
+                <Panel
+                  title="Flavor Details"
+                  titleClassName="text-xl font-semibold text-gray-900 transition-colors duration-200 dark:text-white"
+                  subtitle={
+                    flavorEditorMode === "create" ? "Add a new humor flavor" : "Selected flavor info"
+                  }
+                >
+                  <FlavorDetails
+                    flavor={selectedFlavor}
+                    audit={selectedFlavor ? flavorAuditById.get(selectedFlavor.id) ?? null : null}
+                    mode={flavorEditorMode}
+                    draft={flavorDraft}
+                    actionMessage={flavorActionFeedback?.message ?? null}
+                    actionTone={flavorActionFeedback?.tone ?? "info"}
+                    isDuplicating={isDuplicatingFlavor}
+                    onCreateFlavor={handleCreateFlavor}
+                    onEditFlavor={handleEditFlavor}
+                    onDuplicateFlavor={handleDuplicateFlavor}
+                    onDeleteFlavor={() => void handleDeleteFlavor()}
+                    onCancel={handleCancelFlavor}
+                    onSave={(value) => void handleSaveFlavor(value)}
+                  />
+                </Panel>
 
-            <Panel title="Steps" subtitle="How this flavor is applied">
-            <StepsPanel
-              flavor={selectedFlavor}
-              selectedFlavorNumericId={selectedFlavorNumericId}
-              selectedFlavorBinding={selectedStepFlavorBinding}
-              editorMode={stepEditorMode}
-                editingStepId={editingStepId}
-                draft={stepDraft}
-                errors={stepFormErrors}
-                actionMessage={stepActionFeedback?.message ?? null}
-                actionTone={stepActionFeedback?.tone ?? "info"}
-                isSavingStep={isSavingStep}
-                isLoadingSteps={isLoadingSteps}
-                stepTypeOptions={stepTypeOptions}
-                llmModelOptions={llmModelOptions}
-                llmInputTypeOptions={llmInputTypeOptions}
-                llmOutputTypeOptions={llmOutputTypeOptions}
-                onCreateStep={handleCreateStep}
-                onEditStep={handleEditStep}
-                onDeleteStep={handleDeleteStep}
-                onMoveStep={handleMoveStep}
-                onSaveStep={handleSaveStep}
-                onCancelStep={() => resetStepEditor(false)}
-              />
-            </Panel>
+                <Panel title="Steps" subtitle="How this flavor is applied">
+                  <StepsPanel
+                    flavor={selectedFlavor}
+                    selectedFlavorNumericId={selectedFlavorNumericId}
+                    selectedFlavorBinding={selectedStepFlavorBinding}
+                    editorMode={stepEditorMode}
+                    editingStepId={editingStepId}
+                    draft={stepDraft}
+                    errors={stepFormErrors}
+                    actionMessage={stepActionFeedback?.message ?? null}
+                    actionTone={stepActionFeedback?.tone ?? "info"}
+                    isSavingStep={isSavingStep}
+                    isLoadingSteps={isLoadingSteps}
+                    stepTypeOptions={stepTypeOptions}
+                    llmModelOptions={llmModelOptions}
+                    llmInputTypeOptions={llmInputTypeOptions}
+                    llmOutputTypeOptions={llmOutputTypeOptions}
+                    onCreateStep={handleCreateStep}
+                    onEditStep={handleEditStep}
+                    onDeleteStep={handleDeleteStep}
+                    onMoveStep={handleMoveStep}
+                    onSaveStep={handleSaveStep}
+                    onCancelStep={() => resetStepEditor(false)}
+                  />
+                </Panel>
 
-            <div className="xl:col-span-2">
-              <Panel title="Test Panel" subtitle="Generate caption candidates from an uploaded image">
-                <TestPanel
-                  flavors={flavors}
-                  initialFlavorId={selectedFlavor?.id ?? null}
-                  flavorSource={flavorSource}
-                  referenceCatalog={referenceCatalog}
-                />
-              </Panel>
+                <div className="xl:col-span-2">
+                  <Panel title="Test Panel" subtitle="Generate caption candidates from an uploaded image">
+                    <TestPanel
+                      flavors={flavors}
+                      initialFlavorId={selectedFlavor?.id ?? null}
+                      flavorSource={flavorSource}
+                      referenceCatalog={referenceCatalog}
+                    />
+                  </Panel>
+                </div>
+              </div>
             </div>
           </div>
         </main>
