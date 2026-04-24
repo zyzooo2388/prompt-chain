@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import type { HumorFlavor } from "@/lib/flavor-types";
 import type { FlavorAudit } from "@/lib/flavor-audit";
 
@@ -16,8 +18,43 @@ export function FlavorList({
   onSelectFlavor,
   onCreateFlavor,
 }: FlavorListProps) {
+  const [searchTerm, setSearchTerm] = useState("");
+
+  const normalizedSearchTerm = searchTerm.trim().toLowerCase();
+  const filteredFlavors = flavors.filter((flavor) => {
+    if (!normalizedSearchTerm) {
+      return true;
+    }
+
+    const audit = auditById.get(flavor.id);
+    const status = audit?.status ?? (audit?.usable ? "working" : "unavailable");
+    const searchableText = [
+      flavor.displayLabel,
+      flavor.slug,
+      flavor.description,
+      flavor.tone,
+      status,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+
+    return searchableText.includes(normalizedSearchTerm);
+  });
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
+      <div className="relative">
+        <input
+          type="search"
+          value={searchTerm}
+          onChange={(event) => setSearchTerm(event.target.value)}
+          placeholder="Search flavors..."
+          aria-label="Search flavors"
+          className="w-full rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm text-gray-900 outline-none transition-colors duration-200 placeholder:text-gray-500 focus:border-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder:text-gray-400 dark:focus:border-gray-500"
+        />
+      </div>
+
       <button
         type="button"
         onClick={onCreateFlavor}
@@ -27,53 +64,59 @@ export function FlavorList({
       </button>
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain scroll-smooth pr-1">
-        <ul className="space-y-2">
-          {flavors.map((flavor) => {
-            const isActive = flavor.id === selectedFlavorId;
-            const audit = auditById.get(flavor.id);
-            const status = audit?.status ?? (audit?.usable ? "working" : "unavailable");
-            const statusClassName =
-              status === "working"
-                ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/70 dark:bg-emerald-950/50 dark:text-emerald-300"
-                : status === "usable_with_warning"
-                  ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/70 dark:bg-amber-950/50 dark:text-amber-300"
-                  : "border-red-200 bg-red-50 text-red-700 dark:border-red-900/70 dark:bg-red-950/50 dark:text-red-300";
+        {filteredFlavors.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-gray-200 bg-white px-4 py-6 text-sm text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+            No flavors match your search.
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {filteredFlavors.map((flavor) => {
+              const isActive = flavor.id === selectedFlavorId;
+              const audit = auditById.get(flavor.id);
+              const status = audit?.status ?? (audit?.usable ? "working" : "unavailable");
+              const statusClassName =
+                status === "working"
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/70 dark:bg-emerald-950/50 dark:text-emerald-300"
+                  : status === "usable_with_warning"
+                    ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/70 dark:bg-amber-950/50 dark:text-amber-300"
+                    : "border-red-200 bg-red-50 text-red-700 dark:border-red-900/70 dark:bg-red-950/50 dark:text-red-300";
 
-            return (
-              <li key={flavor.id}>
-                <button
-                  type="button"
-                  onClick={() => onSelectFlavor(flavor.id)}
-                  className={`relative block w-full overflow-hidden rounded-xl border px-4 py-3 text-left transition-colors duration-200 hover:bg-gray-50 dark:hover:bg-gray-700 ${
-                    isActive
-                      ? "border-gray-900 bg-gray-100 dark:border-gray-500 dark:bg-gray-700"
-                      : "border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800"
-                  }`}
-                >
-                  <span
-                    className={`absolute inset-y-2 left-0 w-1 rounded-r ${
-                      isActive ? "bg-gray-900 dark:bg-gray-200" : "bg-transparent"
+              return (
+                <li key={flavor.id}>
+                  <button
+                    type="button"
+                    onClick={() => onSelectFlavor(flavor.id)}
+                    className={`relative block w-full overflow-hidden rounded-xl border px-4 py-3 text-left transition-colors duration-200 hover:bg-gray-50 dark:hover:bg-gray-700 ${
+                      isActive
+                        ? "border-gray-900 bg-gray-100 dark:border-gray-500 dark:bg-gray-700"
+                        : "border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800"
                     }`}
-                  />
-                  <p className="font-medium text-gray-900 transition-colors duration-200 dark:text-white">
-                    {flavor.displayLabel}
-                  </p>
-                  <p className="mt-2">
-                    <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide ${statusClassName}`}>
-                      {status}
-                    </span>
-                  </p>
-                  <p className="mt-1 text-sm text-gray-500 transition-colors duration-200 dark:text-gray-400">
-                    {flavor.description || flavor.tone}
-                  </p>
-                  {!audit?.usable && audit?.reason ? (
-                    <p className="mt-2 text-xs text-red-700 dark:text-red-300">{audit.reason}</p>
-                  ) : null}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+                  >
+                    <span
+                      className={`absolute inset-y-2 left-0 w-1 rounded-r ${
+                        isActive ? "bg-gray-900 dark:bg-gray-200" : "bg-transparent"
+                      }`}
+                    />
+                    <p className="font-medium text-gray-900 transition-colors duration-200 dark:text-white">
+                      {flavor.displayLabel}
+                    </p>
+                    <p className="mt-2">
+                      <span className={`inline-flex rounded-full border px-2 py-0.5 text-[11px] font-medium uppercase tracking-wide ${statusClassName}`}>
+                        {status}
+                      </span>
+                    </p>
+                    <p className="mt-1 text-sm text-gray-500 transition-colors duration-200 dark:text-gray-400">
+                      {flavor.description || flavor.tone}
+                    </p>
+                    {!audit?.usable && audit?.reason ? (
+                      <p className="mt-2 text-xs text-red-700 dark:text-red-300">{audit.reason}</p>
+                    ) : null}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
     </div>
   );
